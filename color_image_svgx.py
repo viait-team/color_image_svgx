@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""trace a color image with potrace"""
+"""trace a color image with potrace and extract its text using OCR"""
 
 # color_image_svg.py
 # Original script by ukurereh, May 20, 2012
@@ -29,13 +29,14 @@ PNGNQ_PATH                  = 'pngnq'
 IMAGEMAGICK_CONVERT_PATH    = 'magick'
 IMAGEMAGICK_IDENTIFY_PATH   = 'magick identify'
 POTRACE_PATH                = 'potrace'
+TESSERACT_PATH              = 'tesseract'
 
 POTRACE_DPI = 90.0 # potrace docs say it's 72, but this seems to work best
 COMMAND_LEN_NEAR_MAX = 1900 # a low approximate (but not maximum) limit for
                             # very large command-line commands
 VERBOSITY_LEVEL = 0 # not just a constant, also affected by -v/--verbose option
 
-VERSION = '2.00'
+VERSION = '3.00'
 
 import os
 import sys
@@ -45,15 +46,12 @@ import argparse
 from glob import iglob
 import functools
 import tempfile
-
-# Assuming svg_stack.py is in the same directory or installed as a package
-try:
-    from svg_stack import svg_stack
-except ImportError:
-    print("Error: The 'svg_stack' library is required. Please ensure svg_stack.py is in the same directory.", file=sys.stderr)
-    sys.exit(1)
+import csv
+import xml.etree.ElementTree as ET
+import re
 
 
+#
 def verbose(*args, level=1):
     if VERBOSITY_LEVEL >= level:
         # Use a single print call with space separation
@@ -229,6 +227,153 @@ def trace(src, desttrace, outcolor, despeckle=2, smoothcorners=1.0, optimizepath
     process_command(command)
 
 
+
+def run_ocr_replace_text_path(image_file, svg_file, output_stem):
+    """Runs Tesseract OCR, scales coordinates, and replaces text paths in svg."""
+    verbose(f"Running OCR on '{image_file}' and replacing text paths in '{svg_file}'...")
+    # Tesseract automatically adds the .tsv extension to the output stem
+    command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}" -l eng tsv'
+    process_command(command)
+    tsv_file = f"{output_stem}.tsv"
+    verbose(f"Successfully created '{tsv_file}'")
+
+    # --- Helper functions for SVG transformation parsing ---
+
+    def combine_transforms(t1, t2):
+        """Combines two transformation matrices (t1 * t2)."""
+        a1, b1, c1, d1, e1, f1 = t1
+        a2, b2, c2, d2, e2, f2 = t2
+        return [
+            a1 * a2 + c1 * b2, b1 * a2 + d1 * b2,
+            a1 * c2 + c1 * d2, b1 * c2 + d1 * d2,
+            a1 * e2 + c1 * f2 + e1, b1 * e2 + d1 * f2 + f1
+        ]
+
+    def parse_transform(transform_string):
+        """Parses a complete SVG transform string into a single transformation matrix."""
+        transform_regex = re.compile(r'(\w+)\(([^)]+)\)')
+        final_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        if not transform_string:
+            return final_matrix
+        for func, params_str in transform_regex.findall(transform_string):
+            params = [float(p) for p in re.split(r'[,\s]+', params_str.strip()) if p]
+            current_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+            if func == 'matrix':
+                current_matrix = params
+            elif func == 'translate':
+                tx = params[0]
+                ty = params[1] if len(params) > 1 else 0
+                current_matrix = [1, 0, 0, 1, tx, ty]
+            elif func == 'scale':
+                sx = params[0]
+                sy = params[1] if len(params) > 1 else sx
+                current_matrix = [sx, 0, 0, sy, 0, 0]
+            final_matrix = combine_transforms(final_matrix, current_matrix)
+        return final_matrix
+
+    def transform_point(point, matrix):
+        """Applies a transformation matrix to a point."""
+        x, y = point
+        a, b, c, d, e, f = matrix
+        return (a * x + c * y + e, b * x + d * y + f)
+
+    def get_first_point(path_data):
+        """Extracts the first point from an SVG path 'd' attribute."""
+        match = re.search(r'[Mm]\s*([-\d.]+)[,\s]+([-\d.]+)', path_data)
+        if match:
+            return float(match.group(1)), float(match.group(2))
+        return None
+
+    # --- Main Logic ---
+
+    try:
+        # Step 1: Parse all words from the TSV file
+        words = []
+        with open(tsv_file, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f, delimiter='\t')
+            header = next(reader) # Store header for later
+            for row in reader:
+                # A valid word row has 12 columns and text in the last one
+                if len(row) == 12 and row[11].strip():
+                    words.append({
+                        "text": row[11],
+                        "left": int(row[6]), "top": int(row[7]),
+                        "width": int(row[8]), "height": int(row[9])
+                    })
+        
+        if not words:
+            verbose("OCR found no words, no paths will be removed from the SVG.")
+            return
+            
+        # Step 2: Calculate the scaling factor and scale the OCR word coordinates
+        scale_factor = 72.0 / POTRACE_DPI
+        scaled_words = []
+        for word in words:
+            scaled_words.append({
+                "text": word["text"],
+                "left": word["left"] * scale_factor,
+                "top": word["top"] * scale_factor,
+                "width": word["width"] * scale_factor,
+                "height": word["height"] * scale_factor
+            })
+        verbose(f"Calculated coordinate scale factor: {scale_factor}. Scaled {len(words)} OCR boxes.")
+
+        # Step 3: Parse SVG and find paths to remove
+        ET.register_namespace('', "http://www.w3.org/2000/svg")
+        tree = ET.parse(svg_file)
+        root = tree.getroot()
+        parent_map = {c: p for p in tree.iter() for c in p}
+        paths_to_remove = []
+        svg_ns = "{http://www.w3.org/2000/svg}"
+
+        def traverse_and_find(element, parent_transform):
+            local_transform_str = element.get('transform', '')
+            local_transform = parse_transform(local_transform_str)
+            current_transform = combine_transforms(parent_transform, local_transform)
+
+            for child in element:
+                tag = child.tag
+                if tag == f'{svg_ns}g':
+                    traverse_and_find(child, current_transform)
+                elif tag == f'{svg_ns}path':
+                    path_data = child.get('d')
+                    if not path_data:
+                        continue
+                    
+                    first_point = get_first_point(path_data)
+                    if first_point:
+                        global_point = transform_point(first_point, current_transform)
+                        gx, gy = global_point
+
+                        # Use the SCALED word boxes for the comparison
+                        for word in scaled_words:
+                            if (gx >= word["left"] and gx <= (word["left"] + word["width"]) and
+                                gy >= word["top"] and gy <= (word["top"] + word["height"])):
+                                paths_to_remove.append(child)
+                                break 
+        
+        identity_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        traverse_and_find(root, identity_matrix)
+
+        # Step 4: Remove the identified paths
+        if paths_to_remove:
+            verbose(f"Removing {len(paths_to_remove)} vectorized text paths from SVG...")
+            for path in paths_to_remove:
+                if path in parent_map:
+                    parent = parent_map[path]
+                    parent.remove(path)
+        
+        # Step 5: Save the modified SVG
+        tree.write(svg_file, encoding='utf-8', xml_declaration=True)
+        verbose(f"Successfully modified '{svg_file}' with text paths removed.")
+
+    except (FileNotFoundError, IndexError, ValueError, ET.ParseError) as e:
+        print(f"An error occurred during verification and text replacement for '{image_file}': {e}", file=sys.stderr)
+        return
+
+
+
+
 def check_range(min_val, max_val, typefunc, typename, strval):
     """for argparse type functions, checks the range of a value"""
     try:
@@ -265,7 +410,7 @@ def get_args(cmdargs=None):
 
     # Image options
     parser.add_argument('-s', '--stack', action='store_true', help="Stack color traces for more accurate output.")
-    parser.add_argument('-p', '--prescale', metavar='size', type=functools.partial(check_range, 0.1, None, float, "a number"), default=2.0, help="Scale image by this factor before tracing for greater detail (default: 2.0).")
+    parser.add_argument('-p', '--prescale', metavar='size', type=functools.partial(check_range, 0.1, None, float, "a number"), default=1.0, help="Scale image by this factor before tracing for greater detail (default: 1.0).")
 
     # Potrace options
     parser.add_argument('-D', '--despeckle', metavar='size', type=functools.partial(check_range, 0, None, int, "an integer"), default=2, help='Suppress speckles of this many pixels (potrace --turdsize, default: 2).')
@@ -302,7 +447,6 @@ def get_inputs_outputs(arg_inputs, output_pattern):
                 output_path = output_pattern.format(basename)
                 yield input_path, output_path
                 processed_inputs.add(abs_input_path)
-
 
 def color_trace_sequential(args):
     """Main sequential processing loop."""
@@ -358,27 +502,62 @@ def color_trace_sequential(args):
                     verbose(f"Ignoring background color {args.background}. Tracing {len(palette)} colors.")
 
 
-                # 4. Isolate and Trace each color
-                layout = svg_stack.CBoxLayout()
+                # 4. Isolate and Trace each color, collecting the output paths
+                trace_paths = []
                 for i, color in enumerate(palette):
                     verbose(f"  - Tracing color {i+1}/{len(palette)}: {color}")
                     isolated_path = os.path.join(tmpdir, f"isolated_{i}.bmp")
                     trace_path = os.path.join(tmpdir, f"trace_{i}.svg")
+                    trace_paths.append(trace_path)
 
                     isolate_color(reduced_path, isolated_path, color, palette, stack=args.stack)
                     trace(isolated_path, trace_path, color, args.despeckle, args.smoothcorners, args.optimizepaths, width)
-                    layout.addSVG(trace_path)
 
-                # 5. Stack SVG layers and save
-                doc = svg_stack.Document()
-                doc.setLayout(layout)
+                # 5. Merge SVG layers using the PowerShell text-based logic
+                verbose("Merging SVG layers...")
+                
+                # Concatenate all temporary SVG file contents
+                merged_content_parts = []
+                for path in trace_paths:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        merged_content_parts.append(f.read())
+                merged_content = "\n".join(merged_content_parts)
+
+                # Find the very first SVG tag from the merged content and keep it
+                first_svg_tag_match = re.search(r'<svg[^>]*>', merged_content, flags=re.IGNORECASE)
+                if not first_svg_tag_match:
+                    raise Exception("Could not find a valid <svg> tag in the generated files.")
+                first_svg_tag = first_svg_tag_match.group(0)
+
+                # Post-merge cleanup with regex
+                clean_content = re.sub(r'<\?xml.*?\?>', '', merged_content, flags=re.IGNORECASE)
+                clean_content = re.sub(r'<!DOCTYPE[^>]*>', '', clean_content, flags=re.IGNORECASE)
+                clean_content = re.sub(r'<metadata>.*?</metadata>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
+                
+                # Remove all SVG start and end tags from the body of the content
+                clean_content = re.sub(r'<svg[^>]*>', '', clean_content, flags=re.IGNORECASE)
+                clean_content = re.sub(r'</svg>', '', clean_content, flags=re.IGNORECASE)
+                
+                # Reconstruct the final SVG
+                final_svg_content = f"{first_svg_tag}\n{clean_content.strip()}\n</svg>"
+                
                 with open(output_file, 'w', encoding='utf-8') as f:
-                    doc.save(f)
+                    f.write(final_svg_content)
                 verbose(f"Successfully created '{output_file}'")
 
             except Exception as e:
                 print(f"\nAn error occurred while processing '{input_file}': {e}", file=sys.stderr)
                 # Continue to the next file
+                continue
+
+      # 6. Run OCR and replace text paths after SVG is successfully created
+        if os.path.exists(output_file):
+            try:
+                # The output stem is the full path to the output file, without its extension
+                output_stem = os.path.splitext(output_file)[0]
+                run_ocr_replace_text_path(input_file, output_file, output_stem)
+            except Exception as e:
+                print(f"\nAn error occurred during OCR and SVG text path replacement for '{input_file}': {e}", file=sys.stderr)
                 continue
 
 def main():

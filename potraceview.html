@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>SVGX Viewer - RGB Trace</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      background: #111;
+      color: #eee;
+    }
+
+    #svg-container {
+      width: 100vw;
+      height: 100vh;
+      overflow: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #control-panel {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 1000;
+    }
+
+    .icon-button {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: #333;
+      color: white;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      box-shadow: 0 0 5px rgba(255,255,255,0.2);
+      transition: background 0.2s;
+    }
+
+    .icon-button:hover {
+      background: #555;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+<div id="svg-container">
+  <!-- SVG will be injected here -->
+</div>
+
+<div id="control-panel">
+  <button class="icon-button" id="open-btn" title="Open SVG File">📂</button>
+  <button class="icon-button" id="open-tsv-btn" title="Open TSV File">📄</button>
+  <button class="icon-button" id="convert-btn" title="Convert to SVGX">🎨</button>
+  <input type="file" id="file-input" accept=".svg" />
+  <input type="file" id="tsv-file-input" accept=".tsv" />
+  <button class="icon-button" id="download-btn" title="Download SVG">💾</button>
+</div>
+
+<script src="SVGXTsvProcessor.js"></script>
+<script src="SVGXTsvVisual.js"></script>
+<script>
+  let tsvFileContent = ''; // Variable to store TSV content
+  let currentFileName = 'download.svg'; // Variable to store the current file name
+
+  const openBtn = document.getElementById('open-btn');
+  const openTsvBtn = document.getElementById('open-tsv-btn');
+  const convertBtn = document.getElementById('convert-btn');
+  const downloadBtn = document.getElementById('download-btn');
+  const fileInput = document.getElementById('file-input');
+  const tsvFileInput = document.getElementById('tsv-file-input');
+  const svgContainer = document.getElementById('svg-container');
+
+  openBtn.addEventListener('click', () => {
+    fileInput.click();
+  });
+
+  openTsvBtn.addEventListener('click', () => {
+    tsvFileInput.click();
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    const svg = svgContainer.querySelector('svg');
+    if (!svg) {
+      console.warn('[WARN] No SVG content to download.');
+      return;
+    }
+
+    const serializer = new XMLSerializer();
+    const svgString = serializer.serializeToString(svg);
+    const blob = new Blob([svgString], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = currentFileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.log('[LOG] SVG download initiated.');
+  });
+
+  fileInput.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    currentFileName = file.name; // Store the file name
+    const text = await file.text();
+    svgContainer.innerHTML = text;
+    console.log('[LOG] SVG loaded');
+  });
+
+  tsvFileInput.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    tsvFileContent = await file.text();
+    console.log('[LOG] TSV file read successfully.');
+  });
+
+
+
+  function getScale(tsvFileContent, svgNode) {
+    let ocrWidth = 0;
+    let svgWidth = 0;
+
+    // 1. Get the original image width from the TSV content.
+    // Tesseract's first data row (level 1) contains the page dimensions.
+    if (tsvFileContent) {
+      const lines = tsvFileContent.split('\n');
+      for (const line of lines) {
+        // Find the page-level information row
+        if (line.startsWith('1\t')) {
+          const columns = line.split('\t');
+          // The width is the 9th column (index 8).
+          if (columns.length > 8) {
+            ocrWidth = parseInt(columns[8], 10);
+            // We found the page dimensions, so we can stop looking.
+            break;
+          }
+        }
+      }
+    }
+
+    // 2. Get the SVG coordinate space width from the viewBox attribute.
+    if (svgNode && svgNode.getAttribute('viewBox')) {
+      const viewBoxParts = svgNode.getAttribute('viewBox').split(' ');
+      // The viewBox format is "min-x min-y width height". Width is at index 2.
+      if (viewBoxParts.length === 4) {
+        svgWidth = parseFloat(viewBoxParts[2]);
+      }
+    }
+
+    // 3. Calculate the scale factor.
+    // This is the ratio of the target coordinate system (SVG) to the source (OCR).
+    if (ocrWidth > 0 && svgWidth > 0) {
+      return svgWidth / ocrWidth;
+    }
+
+    // As a safe fallback, return 1.0 if either dimension could not be found.
+    return 1.0;
+  }
+
+
+  convertBtn.addEventListener('click', () => {
+   
+    const svg = svgContainer.querySelector('svg');
+    if (!svg) {
+      console.warn('[WARN] No SVG loaded');
+      return;
+    }
+
+    const scale = getScale(tsvFileContent, svg);
+    console.log(`[LOG] Calculated scale factor: ${scale}`);
+
+    // Process TSV data
+    let jsonResult = null;
+    if (tsvFileContent) {
+      try {
+        const processor = new SVGXTsvProcessor(tsvFileContent, scale);
+        jsonResult = processor.GetImageText();
+        if (jsonResult) {
+          console.log("--- JSON OUTPUT ---");
+          console.log(jsonResult);
+        }
+      } catch (error) {
+        console.error("Error processing TSV file:", error);
+      }
+    } else {
+      console.warn('[WARN] No TSV content available. Please load a TSV file first.');
+    }
+
+    // Remove matched paths and insert text elements
+    if (svg) {
+      const visualizer = new SVGXTsvVisual(tsvFileContent, svg, scale);
+      visualizer.applyColorToSvg();
+      visualizer.matchPathsToWords();
+      visualizer.removeMatchedPaths();
+      if (jsonResult) {
+        console.log("--- Inserting Text Elements ---");
+        visualizer.insertText(jsonResult);
+      } 
+      
+    }
+
+  });
+</script>
+
+</body>
+</html>
