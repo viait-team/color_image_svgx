@@ -49,7 +49,7 @@ import tempfile
 import csv
 import xml.etree.ElementTree as ET
 import re
-
+from classify_image_file import is_table_image
 
 #
 def verbose(*args, level=1):
@@ -228,149 +228,49 @@ def trace(src, desttrace, outcolor, despeckle=2, smoothcorners=1.0, optimizepath
 
 
 
+
 def run_ocr_replace_text_path(image_file, svg_file, output_stem):
     """Runs Tesseract OCR, scales coordinates, and replaces text paths in svg."""
     verbose(f"Running OCR on '{image_file}' and replacing text paths in '{svg_file}'...")
-    # Tesseract automatically adds the .tsv extension to the output stem
-    command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}" -l eng tsv'
-    process_command(command)
-    tsv_file = f"{output_stem}.tsv"
-    verbose(f"Successfully created '{tsv_file}'")
+    # Run Image Classification
+    is_it_a_table = is_table_image(path=image_file)
+    verbose(f"Image Classification- {image_file} is a table image: {is_it_a_table}")
 
-    # --- Helper functions for SVG transformation parsing ---
+    # Run OCR
+    if is_it_a_table:
 
-    def combine_transforms(t1, t2):
-        """Combines two transformation matrices (t1 * t2)."""
-        a1, b1, c1, d1, e1, f1 = t1
-        a2, b2, c2, d2, e2, f2 = t2
-        return [
-            a1 * a2 + c1 * b2, b1 * a2 + d1 * b2,
-            a1 * c2 + c1 * d2, b1 * c2 + d1 * d2,
-            a1 * e2 + c1 * f2 + e1, b1 * e2 + d1 * f2 + f1
-        ]
+        base_name = os.path.splitext(os.path.basename(image_file))[0]
 
-    def parse_transform(transform_string):
-        """Parses a complete SVG transform string into a single transformation matrix."""
-        transform_regex = re.compile(r'(\w+)\(([^)]+)\)')
-        final_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-        if not transform_string:
-            return final_matrix
-        for func, params_str in transform_regex.findall(transform_string):
-            params = [float(p) for p in re.split(r'[,\s]+', params_str.strip()) if p]
-            current_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-            if func == 'matrix':
-                current_matrix = params
-            elif func == 'translate':
-                tx = params[0]
-                ty = params[1] if len(params) > 1 else 0
-                current_matrix = [1, 0, 0, 1, tx, ty]
-            elif func == 'scale':
-                sx = params[0]
-                sy = params[1] if len(params) > 1 else sx
-                current_matrix = [sx, 0, 0, sy, 0, 0]
-            final_matrix = combine_transforms(final_matrix, current_matrix)
-        return final_matrix
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Intermediate file paths
+            reduce_color_image_file_path = os.path.join(tmpdir, f"{base_name}_reduced.png")
+            bilevel_image_file_path = os.path.join(tmpdir, f"{base_name}_bilevel.png")
 
-    def transform_point(point, matrix):
-        """Applies a transformation matrix to a point."""
-        x, y = point
-        a, b, c, d, e, f = matrix
-        return (a * x + c * y + e, b * x + d * y + f)
+            # ImageMagick commands
+            try:
+                # Reduce color and create bilevel image
+                reduce_cmd = [IMAGEMAGICK_CONVERT_PATH, image_file, "-fuzz", "20%", "-fill", "white", "-opaque", "red", reduce_color_image_file_path]
+                subprocess.run(reduce_cmd, check=True, capture_output=True)
 
-    def get_first_point(path_data):
-        """Extracts the first point from an SVG path 'd' attribute."""
-        match = re.search(r'[Mm]\s*([-\d.]+)[,\s]+([-\d.]+)', path_data)
-        if match:
-            return float(match.group(1)), float(match.group(2))
-        return None
+                bilevel_cmd = [IMAGEMAGICK_CONVERT_PATH, reduce_color_image_file_path, "-type", "Bilevel", "-morphology", "Erode", "Diamond", bilevel_image_file_path]
+                subprocess.run(bilevel_cmd, check=True, capture_output=True)
+                
+            except subprocess.CalledProcessError as e:
+                verbose(f"ImageMagick command failed for {image_file}: {e.stderr}")
+                bilevel_image_file_path = image_file
 
-    # --- Main Logic ---
+            # Tesseract automatically adds the .tsv extension to the output stem
+            command = f'"{TESSERACT_PATH}" "{bilevel_image_file_path}" "{output_stem}" -l eng tsv'
+            process_command(command)
+            tsv_file = f"{output_stem}.tsv"
+            verbose(f"Successfully created '{tsv_file}'")
 
-    try:
-        # Step 1: Parse all words from the TSV file
-        words = []
-        with open(tsv_file, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f, delimiter='\t')
-            header = next(reader) # Store header for later
-            for row in reader:
-                # A valid word row has 12 columns and text in the last one
-                if len(row) == 12 and row[11].strip():
-                    words.append({
-                        "text": row[11],
-                        "left": int(row[6]), "top": int(row[7]),
-                        "width": int(row[8]), "height": int(row[9])
-                    })
-        
-        if not words:
-            verbose("OCR found no words, no paths will be removed from the SVG.")
-            return
-            
-        # Step 2: Calculate the scaling factor and scale the OCR word coordinates
-        scale_factor = 72.0 / POTRACE_DPI
-        scaled_words = []
-        for word in words:
-            scaled_words.append({
-                "text": word["text"],
-                "left": word["left"] * scale_factor,
-                "top": word["top"] * scale_factor,
-                "width": word["width"] * scale_factor,
-                "height": word["height"] * scale_factor
-            })
-        verbose(f"Calculated coordinate scale factor: {scale_factor}. Scaled {len(words)} OCR boxes.")
-
-        # Step 3: Parse SVG and find paths to remove
-        ET.register_namespace('', "http://www.w3.org/2000/svg")
-        tree = ET.parse(svg_file)
-        root = tree.getroot()
-        parent_map = {c: p for p in tree.iter() for c in p}
-        paths_to_remove = []
-        svg_ns = "{http://www.w3.org/2000/svg}"
-
-        def traverse_and_find(element, parent_transform):
-            local_transform_str = element.get('transform', '')
-            local_transform = parse_transform(local_transform_str)
-            current_transform = combine_transforms(parent_transform, local_transform)
-
-            for child in element:
-                tag = child.tag
-                if tag == f'{svg_ns}g':
-                    traverse_and_find(child, current_transform)
-                elif tag == f'{svg_ns}path':
-                    path_data = child.get('d')
-                    if not path_data:
-                        continue
-                    
-                    first_point = get_first_point(path_data)
-                    if first_point:
-                        global_point = transform_point(first_point, current_transform)
-                        gx, gy = global_point
-
-                        # Use the SCALED word boxes for the comparison
-                        for word in scaled_words:
-                            if (gx >= word["left"] and gx <= (word["left"] + word["width"]) and
-                                gy >= word["top"] and gy <= (word["top"] + word["height"])):
-                                paths_to_remove.append(child)
-                                break 
-        
-        identity_matrix = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
-        traverse_and_find(root, identity_matrix)
-
-        # Step 4: Remove the identified paths
-        if paths_to_remove:
-            verbose(f"Removing {len(paths_to_remove)} vectorized text paths from SVG...")
-            for path in paths_to_remove:
-                if path in parent_map:
-                    parent = parent_map[path]
-                    parent.remove(path)
-        
-        # Step 5: Save the modified SVG
-        tree.write(svg_file, encoding='utf-8', xml_declaration=True)
-        verbose(f"Successfully modified '{svg_file}' with text paths removed.")
-
-    except (FileNotFoundError, IndexError, ValueError, ET.ParseError) as e:
-        print(f"An error occurred during verification and text replacement for '{image_file}': {e}", file=sys.stderr)
-        return
-
+    else :    
+        # Tesseract automatically adds the .tsv extension to the output stem
+        command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}" -l eng tsv'
+        process_command(command)
+        tsv_file = f"{output_stem}.tsv"
+        verbose(f"Successfully created '{tsv_file}'")
 
 
 
@@ -550,7 +450,7 @@ def color_trace_sequential(args):
                 # Continue to the next file
                 continue
 
-      # 6. Run OCR and replace text paths after SVG is successfully created
+        # 6. Run OCR and replace text paths after SVG is successfully created
         if os.path.exists(output_file):
             try:
                 # The output stem is the full path to the output file, without its extension
