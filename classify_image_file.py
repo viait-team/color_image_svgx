@@ -129,10 +129,7 @@ def is_table_image(path: str, min_intersections: int = 10, coverage_threshold: f
                             horiz_long_cov >= coverage_threshold and
                             vert_long_cov >= coverage_threshold)
 
-    is_table =  bool(cond_strong_grid or cond_both_long_lines)
-    if (is_table):
-        is_table = False
-    else:
-        is_table = True
+    is_chart =  bool(cond_strong_grid or cond_both_long_lines)
+    is_table = not is_chart
 
     return is_table
