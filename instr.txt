@@ -27,6 +27,27 @@ convert -version
 
 (2) re-install tersseract-ocr
 
+sudo apt update
+sudo apt install -y libpango1.0-dev libcairo2-dev libpangoft2-1.0-0 libpangocairo-1.0-0 \
+  libfontconfig1-dev libicu-dev
+  
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_TRAINING_TOOLS=OFF ..
+  
+# clone tesseract
+git clone https://github.com/tesseract-ocr/tesseract.git
+cd tesseract
+git fetch --all --tags
+git checkout 5.3.0
+
+# build with CMake (recommended)
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local ..
+make -j"$(nproc)"
+sudo make install
+sudo ldconfigmkdir 
+
+
+
 sudo apt purge tesseract-ocr
 sudo apt install libleptonica-dev
 git clone https://github.com/tesseract-ocr/tesseract.git
@@ -41,6 +62,23 @@ tesseract --version
 
 (3) re-install pngquant
 
+sudo apt update
+sudo apt install -y build-essential git libpng-dev
+
+# Clone the latest stable version of pngquant
+git clone --recurse-submodules https://github.com/kornelski/pngquant.git
+
+# Navigate into the source directory
+cd pngquant
+
+# Compile the source code
+./configure
+make
+
+# Install the compiled binary to your system
+sudo make install
+
+
 sudo apt purge pngquant
 git clone --depth 1 --branch 2.17.0 https://github.com/kornelski/pngquant.git
 cd pngquant
@@ -49,5 +87,13 @@ sudo make install
 
 pngquant --version
 
+
+(4) 
+
+pip install opencv-python
+
+pip install svg-stack
+
+pip install lxml
 
 

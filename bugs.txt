@@ -1,0 +1,29 @@
+# find the MagickCore library files
+sudo find /usr/local -name "libMagickCore-7.Q16HDRI.so*" 2>/dev/null
+
+# if not found under /usr/local, search /opt and /usr
+sudo find /opt /usr -name "libMagickCore-7.Q16HDRI.so*" 2>/dev/null
+
+
+chao@FTS-Dev-AI:~/AllProjects/image-svgx/ImageMagick$ sudo find /usr/local -name "libMagickCore-7.Q16HDRI.so*" 2>/dev/null
+[sudo] password for chao: 
+/usr/local/lib/libMagickCore-7.Q16HDRI.so
+/usr/local/lib/libMagickCore-7.Q16HDRI.so.10
+/usr/local/lib/libMagickCore-7.Q16HDRI.so.10.0.2
+
+
+export LD_LIBRARY_PATH=/usr/local/lib/libMagickCore-7.Q16HDRI.so.10
+
+
+# correct temporary test (directory, not file)
+export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
+# test convert
+convert --version
+convert --version
+
+echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/imagemagick.conf
+sudo ldconfig
+
+ldconfig -p | grep MagickCore
+convert --version

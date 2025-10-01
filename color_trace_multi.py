@@ -26,6 +26,7 @@ PNGNQ_PATH                  = 'pngnq'
 IMAGEMAGICK_CONVERT_PATH    = 'convert'
 IMAGEMAGICK_IDENTIFY_PATH   = 'identify'
 POTRACE_PATH                = 'potrace'
+TESSERACT_PATH              = 'tesseract'
 
 POTRACE_DPI = 90.0 # potrace docs say it's 72, but this seems to work best
 COMMAND_LEN_NEAR_MAX = 1900 # a low approximate (but not maximum) limit for
@@ -47,7 +48,7 @@ import tempfile
 import time
 
 from svg_stack import svg_stack
-
+from classify_image_file import is_table_image
 
 def verbose(*args, level=1):
     if VERBOSITY_LEVEL >= level:
@@ -389,6 +390,52 @@ def trace(src, desttrace, outcolor, despeckle=2, smoothcorners=1.0, optimizepath
 
     process_command(command)
 
+
+def run_ocr_image(image_file, output_stem):
+    """Runs Tesseract OCR to have text with scales coordinates"""
+    verbose(f"Running OCR on '{image_file}'...")
+    # Run Image Classification
+    is_it_a_table = is_table_image(path=image_file)
+    verbose(f"Image Classification- {image_file} is a table image: {is_it_a_table}")
+
+    # Run OCR
+    if is_it_a_table:
+
+        base_name = os.path.splitext(os.path.basename(image_file))[0]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Intermediate file paths
+            reduce_color_image_file_path = os.path.join(tmpdir, f"{base_name}_reduced.png")
+            bilevel_image_file_path = os.path.join(tmpdir, f"{base_name}_bilevel.png")
+
+            # ImageMagick commands
+            try:
+                # Reduce color and create bilevel image
+                reduce_cmd = [IMAGEMAGICK_CONVERT_PATH, image_file, "-fuzz", "20%", "-fill", "white", "-opaque", "red", reduce_color_image_file_path]
+                subprocess.run(reduce_cmd, check=True, capture_output=True)
+
+                bilevel_cmd = [IMAGEMAGICK_CONVERT_PATH, reduce_color_image_file_path, "-type", "Bilevel", "-morphology", "Erode", "Diamond", bilevel_image_file_path]
+                subprocess.run(bilevel_cmd, check=True, capture_output=True)
+                
+            except subprocess.CalledProcessError as e:
+                verbose(f"ImageMagick command failed for {image_file}: {e.stderr}")
+                bilevel_image_file_path = image_file
+
+            # Tesseract automatically adds the .tsv extension to the output stem
+            command = f'"{TESSERACT_PATH}" "{bilevel_image_file_path}" "{output_stem}" -l eng tsv'
+            process_command(command)
+            tsv_file = f"{output_stem}.tsv"
+            verbose(f"Successfully created '{tsv_file}'")
+
+    else :    
+        # Tesseract automatically adds the .tsv extension to the output stem
+        command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}" -l eng tsv'
+        process_command(command)
+        tsv_file = f"{output_stem}.tsv"
+        verbose(f"Successfully created '{tsv_file}'")
+
+
+
 def check_range(min, max, typefunc, typename, strval):
     """for argparse type functions, checks the range of a value
 
@@ -634,6 +681,15 @@ def q1_job(q2, total, layers, settings, findex, input, output):
         # add jobs to the second job queue
         for i, color in enumerate(palette):
             q2.put({ 'width': width, 'color': color, 'palette': palette, 'reduced': this_reduced, 'output': output, 'findex': findex, 'cindex': i })
+
+        # Run OCR in parallel as part of the first-stage processing.
+        # The required 'input' and 'output' paths are available here.
+        try:
+            output_stem = os.path.splitext(output)[0]
+            run_ocr_image(input, output_stem)
+        except Exception as e:
+            # Print to stderr as this is a worker process.
+            print(f"\nAn error occurred during OCR for '{input}': {e}", file=sys.stderr)
 
     except (Exception, KeyboardInterrupt) as e:
         # delete temporary files on exception...
