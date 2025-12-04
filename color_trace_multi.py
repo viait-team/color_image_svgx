@@ -23,8 +23,8 @@
 # External program commands. Replace with paths to external programs as needed.
 PNGQUANT_PATH               = 'pngquant'
 PNGNQ_PATH                  = 'pngnq'
-IMAGEMAGICK_CONVERT_PATH    = 'convert'
-IMAGEMAGICK_IDENTIFY_PATH   = 'identify'
+IMAGEMAGICK_CONVERT_PATH    = 'magick'
+IMAGEMAGICK_IDENTIFY_PATH   = 'magick identify'
 POTRACE_PATH                = 'potrace'
 TESSERACT_PATH              = 'tesseract'
 
@@ -36,6 +36,14 @@ VERBOSITY_LEVEL = 0 # not just a constant, also affected by -v/--verbose option
 VERSION = '1.00'
 
 import os, sys
+
+# Set Tesseract data path if not set
+if 'TESSDATA_PREFIX' not in os.environ:
+    possible_paths = ['/usr/local/share/tessdata', '/usr/share/tesseract-ocr/4.00/tessdata', '/usr/share/tesseract-ocr/5/tessdata']
+    for p in possible_paths:
+        if os.path.exists(p):
+            os.environ['TESSDATA_PREFIX'] = p
+            break
 import shutil
 import subprocess
 import argparse
@@ -355,7 +363,7 @@ def fill_with_color(src, dest):
 
 def get_width(src):
     """return width of src image in pixels"""
-    command = '"{identify}" -ping -format "%w" "{src}"'.format(
+    command = '{identify} -ping -format "%w" "{src}"'.format(
         identify=IMAGEMAGICK_IDENTIFY_PATH, src=src)
     stdoutput = process_command(command, stdout_=True)
     width = int(stdoutput)
@@ -414,7 +422,7 @@ def run_ocr_image(image_file, output_stem):
                 reduce_cmd = [IMAGEMAGICK_CONVERT_PATH, image_file, "-fuzz", "20%", "-fill", "white", "-opaque", "red", reduce_color_image_file_path]
                 subprocess.run(reduce_cmd, check=True, capture_output=True)
 
-                bilevel_cmd = [IMAGEMAGICK_CONVERT_PATH, reduce_color_image_file_path, "-type", "Bilevel", "-morphology", "Erode", "Diamond", bilevel_image_file_path]
+                bilevel_cmd = [IMAGEMAGICK_CONVERT_PATH, reduce_color_image_file_path, "-type", "Bilevel", bilevel_image_file_path]
                 subprocess.run(bilevel_cmd, check=True, capture_output=True)
                 
             except subprocess.CalledProcessError as e:
