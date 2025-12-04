@@ -55,7 +55,8 @@ import queue
 import tempfile
 import time
 
-from svg_stack import svg_stack
+import re
+# from svg_stack import svg_stack # Removed dependency
 from classify_image_file import is_table_image
 
 def verbose(*args, level=1):
@@ -759,20 +760,43 @@ def q2_job(layers, layers_lock, settings, width, color, palette, findex, cindex,
 
     # save the svg document if it is ready
     if is_last:
-        # start the svg stack
-        layout = svg_stack.CBoxLayout()
-
+        # Manual SVG merging to preserve viewBox and transforms (replacing svg_stack)
         layer_traces = [os.path.abspath(os.path.join(settings['tmp'], trace_format.format(findex, l))) for l in range(len(layers[findex]))]
 
-        # add layers to svg
-        for t in layer_traces:
-            layout.addSVG(t)
+        try:
+            merged_content_parts = []
+            for path in layer_traces:
+                with open(path, 'r', encoding='utf-8') as f:
+                    merged_content_parts.append(f.read())
+            
+            merged_content = "\n".join(merged_content_parts)
 
-        # save stacked output svg
-        doc = svg_stack.Document()
-        doc.setLayout(layout)
-        with open(output, 'w') as file:
-            doc.save(file)
+            # Find the very first SVG tag from the merged content and keep it
+            # This preserves the viewBox and width/height from the first Potrace output
+            first_svg_tag_match = re.search(r'<svg[^>]*>', merged_content, flags=re.IGNORECASE)
+            if not first_svg_tag_match:
+                raise Exception("Could not find a valid <svg> tag in the generated files.")
+            first_svg_tag = first_svg_tag_match.group(0)
+
+            # Post-merge cleanup with regex
+            # Remove XML declarations, DOCTYPE, metadata, and nested SVG tags
+            clean_content = re.sub(r'<\?xml.*?\?>', '', merged_content, flags=re.IGNORECASE)
+            clean_content = re.sub(r'<!DOCTYPE[^>]*>', '', clean_content, flags=re.IGNORECASE)
+            clean_content = re.sub(r'<metadata>.*?</metadata>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
+            
+            # Remove all SVG start and end tags from the body of the content
+            clean_content = re.sub(r'<svg[^>]*>', '', clean_content, flags=re.IGNORECASE)
+            clean_content = re.sub(r'</svg>', '', clean_content, flags=re.IGNORECASE)
+            
+            # Reconstruct the final SVG
+            final_svg_content = f"{first_svg_tag}\n{clean_content.strip()}\n</svg>"
+            
+            with open(output, 'w', encoding='utf-8') as file:
+                file.write(final_svg_content)
+
+        except Exception as e:
+            print(f"Error merging SVGs: {e}")
+            raise e
 
         remfiles(reduced, *layer_traces)
 
