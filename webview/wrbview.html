@@ -215,7 +215,7 @@
     }
 
 
-    convertBtn.addEventListener('click', () => {
+    convertBtn.addEventListener('click', (event) => {
 
       const svg = svgContainer.querySelector('svg');
       if (!svg) {
@@ -227,6 +227,9 @@
         return;
       }
 
+      const useRelaxedRule = event.ctrlKey;
+      console.log(`[LOG] Convert clicked. Using relaxed float-fixing rule: ${useRelaxedRule}`);
+
       const scale = getScale(tsvFileContent, svg);
       console.log(`[LOG] Calculated scale factor: ${scale}`);
 
@@ -235,7 +238,7 @@
       if (tsvFileContent) {
         try {
           const processor = new SVGXTsvProcessor(tsvFileContent, scale);
-          jsonResult = processor.GetImageText();
+          jsonResult = processor.GetImageText(useRelaxedRule);
           correctedTsvContent = processor.geCorrectedTsvContent();
         } catch (error) {
           console.error("Error processing TSV file:", error);

@@ -22,7 +22,7 @@ class SVGXTsvProcessor {
         this.scale = scale;
     }
 
-    _mutateTSV(tsvText) {
+    _mutateTSV(tsvText, useRelaxedRule = false) {
         const lines = tsvText.trim().split('\n');
         const header = lines[0].split('\t');
         const textIndex = header.indexOf('text');
@@ -63,7 +63,9 @@ class SVGXTsvProcessor {
         }
 
         const decimalRatio = numericTotal > 0 ? twoDecimalCount / numericTotal : 0;
-        const shouldMutate = percentFound && decimalRatio > 0.5;
+        const shouldMutate = useRelaxedRule
+            ? (percentFound || decimalRatio > 0.5)
+            : (percentFound && decimalRatio > 0.5);
 
         // replace "O" with "0"
         if (shouldMutate) {
@@ -112,13 +114,14 @@ class SVGXTsvProcessor {
     /**
      * Executes the full process: parses the TSV string, scales coordinates, groups words, 
      * filters results, and returns a JSON string.
+     * @param {boolean} useRelaxedRule - If true, uses a more lenient heuristic for float correction.
      * @returns {string|null} A JSON string of the processed data, or null if an error occurs.
      */
-    GetImageText() {
+    GetImageText(useRelaxedRule = false) {
         // The entire logic is wrapped in a try/catch block for robust error handling during parsing.
         try {
 
-            const mutatedTSV = this._mutateTSV(this.fileContent);
+            const mutatedTSV = this._mutateTSV(this.fileContent, useRelaxedRule);
             this.fileContent = mutatedTSV;
 
             console.log(`Processing TSV content with a scale factor of ${this.scale}...`);
