@@ -23,8 +23,8 @@
 # External program commands. Replace with paths to external programs as needed.
 PNGQUANT_PATH               = 'pngquant'
 PNGNQ_PATH                  = 'pngnq'
-IMAGEMAGICK_CONVERT_PATH    = 'convert'
-IMAGEMAGICK_IDENTIFY_PATH   = 'identify'
+IMAGEMAGICK_CONVERT_PATH    = 'magick'
+IMAGEMAGICK_IDENTIFY_PATH   = 'magick identify'
 POTRACE_PATH                = 'potrace'
 TESSERACT_PATH              = 'tesseract'
 
@@ -36,6 +36,14 @@ VERBOSITY_LEVEL = 0 # not just a constant, also affected by -v/--verbose option
 VERSION = '1.00'
 
 import os, sys
+
+# Set Tesseract data path if not set
+if 'TESSDATA_PREFIX' not in os.environ:
+    possible_paths = ['/usr/local/share/tessdata', '/usr/share/tesseract-ocr/4.00/tessdata', '/usr/share/tesseract-ocr/5/tessdata']
+    for p in possible_paths:
+        if os.path.exists(p):
+            os.environ['TESSDATA_PREFIX'] = p
+            break
 import shutil
 import subprocess
 import argparse
@@ -47,7 +55,8 @@ import queue
 import tempfile
 import time
 
-from svg_stack import svg_stack
+import re
+# from svg_stack import svg_stack # Removed dependency
 from classify_image_file import is_table_image
 
 def verbose(*args, level=1):
@@ -355,7 +364,7 @@ def fill_with_color(src, dest):
 
 def get_width(src):
     """return width of src image in pixels"""
-    command = '"{identify}" -ping -format "%w" "{src}"'.format(
+    command = '{identify} -ping -format "%w" "{src}"'.format(
         identify=IMAGEMAGICK_IDENTIFY_PATH, src=src)
     stdoutput = process_command(command, stdout_=True)
     width = int(stdoutput)
@@ -414,7 +423,7 @@ def run_ocr_image(image_file, output_stem):
                 reduce_cmd = [IMAGEMAGICK_CONVERT_PATH, image_file, "-fuzz", "20%", "-fill", "white", "-opaque", "red", reduce_color_image_file_path]
                 subprocess.run(reduce_cmd, check=True, capture_output=True)
 
-                bilevel_cmd = [IMAGEMAGICK_CONVERT_PATH, reduce_color_image_file_path, "-type", "Bilevel", "-morphology", "Erode", "Diamond", bilevel_image_file_path]
+                bilevel_cmd = [IMAGEMAGICK_CONVERT_PATH, reduce_color_image_file_path, "-type", "Bilevel", bilevel_image_file_path]
                 subprocess.run(bilevel_cmd, check=True, capture_output=True)
                 
             except subprocess.CalledProcessError as e:
@@ -751,20 +760,43 @@ def q2_job(layers, layers_lock, settings, width, color, palette, findex, cindex,
 
     # save the svg document if it is ready
     if is_last:
-        # start the svg stack
-        layout = svg_stack.CBoxLayout()
-
+        # Manual SVG merging to preserve viewBox and transforms (replacing svg_stack)
         layer_traces = [os.path.abspath(os.path.join(settings['tmp'], trace_format.format(findex, l))) for l in range(len(layers[findex]))]
 
-        # add layers to svg
-        for t in layer_traces:
-            layout.addSVG(t)
+        try:
+            merged_content_parts = []
+            for path in layer_traces:
+                with open(path, 'r', encoding='utf-8') as f:
+                    merged_content_parts.append(f.read())
+            
+            merged_content = "\n".join(merged_content_parts)
 
-        # save stacked output svg
-        doc = svg_stack.Document()
-        doc.setLayout(layout)
-        with open(output, 'w') as file:
-            doc.save(file)
+            # Find the very first SVG tag from the merged content and keep it
+            # This preserves the viewBox and width/height from the first Potrace output
+            first_svg_tag_match = re.search(r'<svg[^>]*>', merged_content, flags=re.IGNORECASE)
+            if not first_svg_tag_match:
+                raise Exception("Could not find a valid <svg> tag in the generated files.")
+            first_svg_tag = first_svg_tag_match.group(0)
+
+            # Post-merge cleanup with regex
+            # Remove XML declarations, DOCTYPE, metadata, and nested SVG tags
+            clean_content = re.sub(r'<\?xml.*?\?>', '', merged_content, flags=re.IGNORECASE)
+            clean_content = re.sub(r'<!DOCTYPE[^>]*>', '', clean_content, flags=re.IGNORECASE)
+            clean_content = re.sub(r'<metadata>.*?</metadata>', '', clean_content, flags=re.DOTALL | re.IGNORECASE)
+            
+            # Remove all SVG start and end tags from the body of the content
+            clean_content = re.sub(r'<svg[^>]*>', '', clean_content, flags=re.IGNORECASE)
+            clean_content = re.sub(r'</svg>', '', clean_content, flags=re.IGNORECASE)
+            
+            # Reconstruct the final SVG
+            final_svg_content = f"{first_svg_tag}\n{clean_content.strip()}\n</svg>"
+            
+            with open(output, 'w', encoding='utf-8') as file:
+                file.write(final_svg_content)
+
+        except Exception as e:
+            print(f"Error merging SVGs: {e}")
+            raise e
 
         remfiles(reduced, *layer_traces)
 
