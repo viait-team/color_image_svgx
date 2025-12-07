@@ -796,6 +796,9 @@ def q1_job(q2, total, layers, settings, findex, input, output):
     if not os.path.exists(destdir):
         os.makedirs(destdir)
 
+    # Classify image as table or line chart
+    is_it_a_table = is_table_image(path=input)
+    lctype = "table" if is_it_a_table else "line"
 
     # temporary files will reside next to the respective output file
     this_scaled = os.path.abspath(os.path.join(settings['tmp'], '{0}~scaled.png'.format(findex)))
@@ -831,9 +834,9 @@ def q1_job(q2, total, layers, settings, findex, input, output):
         # get input image width
         width = get_width(input)
 
-        # add jobs to the second job queue
+        # add jobs to the second job queue (include lctype)
         for i, color in enumerate(palette):
-            q2.put({ 'width': width, 'color': color, 'palette': palette, 'reduced': this_reduced, 'output': output, 'findex': findex, 'cindex': i })
+            q2.put({ 'width': width, 'color': color, 'palette': palette, 'reduced': this_reduced, 'output': output, 'findex': findex, 'cindex': i, 'lctype': lctype })
 
         # Run OCR in parallel as part of the first-stage processing.
         # The required 'input' and 'output' paths are available here.
@@ -853,7 +856,7 @@ def q1_job(q2, total, layers, settings, findex, input, output):
         remfiles(this_scaled)
 
 
-def q2_job(layers, layers_lock, settings, width, color, palette, findex, cindex, reduced, output):
+def q2_job(layers, layers_lock, settings, width, color, palette, findex, cindex, reduced, output, lctype="line"):
     """ Isolates a color and traces it
 
     layers: an ordered list of traced layers as SVGFiles
@@ -862,6 +865,7 @@ def q2_job(layers, layers_lock, settings, width, color, palette, findex, cindex,
         stack, despeckle, smoothcorners, optimizepaths, tmp
         See color_trace_multi for details of the values
     width: the width of the input image
+    lctype: the type of chart ("table" or "line")
     color: the color to isolate
     findex: an integer index for input file
     cindex: an integer index for color
@@ -921,6 +925,9 @@ def q2_job(layers, layers_lock, settings, width, color, palette, findex, cindex,
             if not first_svg_tag_match:
                 raise Exception("Could not find a valid <svg> tag in the generated files.")
             first_svg_tag = first_svg_tag_match.group(0)
+            # Add lctype attribute
+            modified_svg_tag = re.sub(r'<svg([^>]*)>', rf'<svg\1 lctype="{lctype}">', first_svg_tag)
+            first_svg_tag = modified_svg_tag
 
             # Post-merge cleanup with regex
             # Remove XML declarations, DOCTYPE, metadata, and nested SVG tags

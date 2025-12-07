@@ -352,12 +352,12 @@ class SVGXDataTableRendering {
                 title_shift = 3;
                 // title OCR create a row with less than 3 characters, then we need to shift up
                 const titleTemp = exportTitle && tableStartIndex >= title_shift ?
-                        rows[tableStartIndex - title_shift].words.map(w => w.text).join(' ') :
-                        "";
-                if (titleTemp.length <3 ){
+                    rows[tableStartIndex - title_shift].words.map(w => w.text).join(' ') :
+                    "";
+                if (titleTemp.length < 3) {
                     x_axis_label_shift += 1;
                     title_shift += 1;
-                }               
+                }
             }
         }
         x_ticks = this.validateTicks(x_ticks, tableCount);
@@ -553,6 +553,7 @@ class SVGXDataTableRendering {
             return { h, s, l };
         };
 
+
         const sortedColors = [...fills].sort((a, b) => {
             const hslA = hexToHsl(a);
             const hslB = hexToHsl(b);
@@ -561,7 +562,8 @@ class SVGXDataTableRendering {
             return 0;
         });
 
-        const colorRange = [bgColor, ...sortedColors];
+        // Fixed gradient: 
+        const colorRange = [bgColor, '#87CEEB', '#FFFF00', '#FFFF00', '#FF0000', '#FF0000'];
 
         return {
             width,
@@ -661,13 +663,13 @@ class SVGXDataTableRendering {
             const dateRegex = /Simulation Start Date:\s*([A-Za-z]+ \d{1,2}, \d{2}(?:\.\d+)?)/;
             const match = comments.find(line => dateRegex.test(line));
             const rawdate = match ? match.match(dateRegex)[1] : null;
-           
+
             // Normalize date by removing any periods
             if (rawdate) {
                 const normalizedDate = rawdate.replace('.', '');
                 console.log(normalizedDate); // Output: "September 12, 2025"
                 svg.attr("x_start_date", normalizedDate)
-                .attr("x_scale_days", 365);
+                    .attr("x_scale_days", 365);
             }
 
             svg.append("g")
@@ -707,9 +709,9 @@ class SVGXDataTableRendering {
         // BUG FIX: Add prefix to make labels globally meaningful and add a stable 'id' for logic.
         const prefix = "UST 10Y HJM Simulation ";
         const legendData = [
-            { id: "mean",   label: prefix + "Mean",   color: "darkred", strokeWidth: 2, strokeDasharray: "none" },
-            { id: "ci_80",  label: prefix + "80% CI", color: "orange",  strokeWidth: 2, strokeDasharray: "5,3"  },
-            { id: "ci_95",  label: prefix + "95% CI", color: "red",     strokeWidth: 2, strokeDasharray: "2,2"  },
+            { id: "mean", label: prefix + "Mean", color: "darkred", strokeWidth: 2, strokeDasharray: "none" },
+            { id: "ci_80", label: prefix + "80% CI", color: "orange", strokeWidth: 2, strokeDasharray: "5,3" },
+            { id: "ci_95", label: prefix + "95% CI", color: "red", strokeWidth: 2, strokeDasharray: "2,2" },
         ];
 
         const legend = svg.append("g")
@@ -786,9 +788,9 @@ class SVGXDataTableRendering {
             .attr("y", -5)
             .style("font-size", "12px")
             .text("Probability");
-        
+
         const colorLegendWidth = 120;
-        
+
         const gradient = svg.append("defs")
             .append("linearGradient")
             .attr("id", "color-gradient")
@@ -802,7 +804,7 @@ class SVGXDataTableRendering {
             .append("stop")
             .attr("offset", (d, i) => i / (colorScale.range().length - 1))
             .attr("stop-color", d => d);
-            
+
         colorLegend.append("rect")
             .attr("x", 0)
             .attr("y", 0)
@@ -826,7 +828,7 @@ class SVGXDataTableRendering {
             .attr("fill", "transparent")
             .attr("data-logical-group-id", (d, i) => `heatmap_${i}`)
             .style("cursor", "pointer")
-            .on("click", function(event, d) {
+            .on("click", function (event, d) {
                 const index = d;
                 const selection = d3.selectAll(`.heatmap-group-${index}`);
                 if (selection) {

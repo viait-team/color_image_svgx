@@ -94,6 +94,8 @@
   <script src="SVGXTsvVisual.js"></script>
   <script src="SVGXCompositePathRendering.js"></script>
   <script src="SVGXDataTableRendering.js"></script>
+  <script src="SVGXLineChartRendering.js"></script>
+
 
   <script>
     let tsvFileContent = ''; // Variable to store TSV content
@@ -300,7 +302,18 @@
         return;
       }
 
-      //
+      // Detect chart type from lctype attribute
+      const lctype = svg.getAttribute('lctype') || 'table';
+      console.log(`[LOG] Chart type detected: ${lctype}`);
+
+      if (lctype === 'line') {
+        // ===== LINE CHART RENDERING =====
+        const rendering = new SVGXLineChartRendering(svg);
+        // TODO: Add line chart rendering logic
+        return;
+      }
+
+      // ===== TABLE/HEATMAP RENDERING (existing code) =====
       const rendering = new SVGXDataTableRendering(svg);
       const styles = rendering.getStyleFromTableSvg();
 
