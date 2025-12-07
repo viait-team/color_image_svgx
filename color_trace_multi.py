@@ -400,6 +400,126 @@ def trace(src, desttrace, outcolor, despeckle=2, smoothcorners=1.0, optimizepath
     process_command(command)
 
 
+def is_number(text):
+    """Check if the text is a valid number (integer or float)."""
+    return bool(re.match(r'^-?\d+(\.\d+)?$', text.strip()))
+
+def delete_file(file_path):
+    if os.path.exists(file_path):
+        os.remove(file_path)
+        verbose(f"Deleted: {file_path}")
+    else:
+        verbose(f"File not found: {file_path}")
+
+def is_duplicate(new_row, existing_rows, threshold=2):
+    """Check if new_row is a duplicate (same text within threshold pixels)."""
+    try:
+        new_text = new_row['text'].strip()
+        new_left = int(new_row['left'])
+        new_top = int(new_row['top'])
+        
+        for existing_row in existing_rows:
+            existing_text = existing_row.get('text', '').strip()
+            existing_left = int(existing_row.get('left', -999))
+            existing_top = int(existing_row.get('top', -999))
+            
+            # Same text and within threshold pixels?
+            if (new_text == existing_text and 
+                abs(new_left - existing_left) <= threshold and 
+                abs(new_top - existing_top) <= threshold):
+                return True
+        
+        return False
+    except (ValueError, KeyError):
+        return False
+
+def merge_tsv_3way(baseline_tsv, psm6_tsv, psm12_tsv, output_tsv):
+    """Merge 3 TSV files: baseline + PSM 6 numbers + PSM 12 vertical text."""
+    import csv
+    
+    # Load baseline (PSM 3 default) - keep everything except low-confidence special chars
+    with open(baseline_tsv, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        base_rows = []
+        fieldnames = reader.fieldnames
+        
+        for row in reader:
+            # Filter out low-confidence special characters
+            try:
+                text = row.get('text', '').strip()
+                conf = float(row.get('conf', -1))
+                
+                # Check for special characters with low confidence
+                has_special_char = any(char in text for char in ['@', '®', '©', '™'])
+                if has_special_char and conf < 75.0:
+                    verbose(f"Filtered low-confidence special char: '{text}' (conf={conf:.1f})")
+                    continue
+                    
+                base_rows.append(row)
+            except (ValueError, KeyError):
+                base_rows.append(row)
+    
+    # Get image width from first row
+    image_width = 1920  # default
+    if base_rows:
+        try:
+            image_width = int(base_rows[0]['width'])
+        except (ValueError, KeyError):
+            pass
+
+    # Load PSM 6 - add ONLY numbers (not already in baseline)
+    with open(psm6_tsv, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for row in reader:
+            try:
+                conf = float(row['conf'])
+                text = row['text'].strip()
+                
+                # Skip low confidence
+                if conf < 60.0 or not text:
+                    continue
+                
+                # Add ONLY if it's a number AND not duplicate
+                if is_number(text) and not is_duplicate(row, base_rows):
+                    base_rows.append(row)
+                    verbose(f"Added numeric text from PSM 6: '{text}' (conf={conf:.1f})")
+            except (ValueError, KeyError):
+                continue
+
+    # Load PSM 12 - add ONLY vertical text at edges (not already in baseline)
+    with open(psm12_tsv, newline='', encoding='utf-8') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        for row in reader:
+            try:
+                conf = float(row['conf'])
+                text = row['text'].strip()
+                width = int(row['width'])
+                height = int(row['height'])
+                left = int(row['left'])
+                
+                # Skip low confidence
+                if conf < 60.0 or not text:
+                    continue
+                
+                # Add ONLY if vertical at edges AND not duplicate
+                is_tall = height > width * 2
+                at_left_edge = left < image_width * 0.10
+                at_right_edge = left > image_width * 0.90
+                
+                if is_tall and (at_left_edge or at_right_edge) and not is_duplicate(row, base_rows):
+                    base_rows.append(row)
+                    verbose(f"Added vertical text from PSM 12: '{text}' (left={left}, w={width}, h={height}, conf={conf:.1f})")
+            except (ValueError, KeyError):
+                continue
+
+    # Write merged TSV
+    with open(output_tsv, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter='\t')
+        writer.writeheader()
+        writer.writerows(base_rows)
+
+    verbose(f"3-way merged TSV written to: {output_tsv}")
+
 def run_ocr_image(image_file, output_stem):
     """Runs Tesseract OCR to have text with scales coordinates"""
     verbose(f"Running OCR on '{image_file}'...")
@@ -436,12 +556,36 @@ def run_ocr_image(image_file, output_stem):
             tsv_file = f"{output_stem}.tsv"
             verbose(f"Successfully created '{tsv_file}'")
 
-    else :    
-        # Tesseract automatically adds the .tsv extension to the output stem
-        command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}" -l eng tsv'
-        process_command(command)
+    else:
+        # Non-table image: Use 3-mode OCR strategy
         tsv_file = f"{output_stem}.tsv"
-        verbose(f"Successfully created '{tsv_file}'")
+        base_name = os.path.splitext(os.path.basename(image_file))[0]
+
+        # Step 1: Run baseline OCR (PSM 3 default) - general text detection
+        command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}_baseline" -l eng tsv'
+        process_command(command)
+        tsv_baseline_file = f"{output_stem}_baseline.tsv"
+        verbose(f"Successfully created baseline TSV: '{tsv_baseline_file}'")
+
+        # Step 2: Run PSM 6 - for numbers only
+        command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}_psm6" -l eng --psm 6 tsv'
+        process_command(command)
+        tsv_psm6_file = f"{output_stem}_psm6.tsv"
+        verbose(f"Successfully created PSM 6 TSV: '{tsv_psm6_file}'")
+
+        # Step 3: Run PSM 12 - for vertical text at edges
+        command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}_psm12" -l eng --psm 12 tsv'
+        process_command(command)
+        tsv_psm12_file = f"{output_stem}_psm12.tsv"
+        verbose(f"Successfully created PSM 12 TSV: '{tsv_psm12_file}'")
+
+        # Step 4: Merge all 3 TSVs
+        merge_tsv_3way(tsv_baseline_file, tsv_psm6_file, tsv_psm12_file, tsv_file)
+        delete_file(tsv_baseline_file)
+        delete_file(tsv_psm6_file)
+        delete_file(tsv_psm12_file)
+
+        verbose(f"Final 3-way merged TSV: '{tsv_file}'")
 
 
 
