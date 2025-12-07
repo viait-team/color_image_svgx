@@ -176,7 +176,7 @@
       // 1. Get the original image width from the TSV content.
       // Tesseract's first data row (level 1) contains the page dimensions.
       if (tsvFileContent) {
-        const lines = tsvFileContent.split('\n');
+        const lines = tsvFileContent.split(/\r?\n/);
         for (const line of lines) {
           // Find the page-level information row
           if (line.startsWith('1\t')) {

@@ -272,15 +272,15 @@ class SVGXDataTableRendering {
         let ycount = exportYTicks ? 1 : 0;
         let xcount = exportXTicks ? 1 : 0;
 
-        const lines = tsvContent.trim().split('\n');
-        const headers = lines[0].split('\t');
+        const lines = tsvContent.trim().split(/\r?\n/);
+        const headers = lines[0].split('\t').map(h => h.trim());
         const words = [];
 
         for (let i = 1; i < lines.length; i++) {
             const parts = lines[i].split('\t');
             const obj = {};
             for (let j = 0; j < headers.length; j++) {
-                obj[headers[j]] = parts[j];
+                obj[headers[j]] = parts[j] ? parts[j].trim() : parts[j];
             }
             if (obj.text && obj.text.trim() !== '') {
                 words.push({
@@ -345,18 +345,26 @@ class SVGXDataTableRendering {
             if (isTickRows) {
                 x_ticks = tableRows[0];
             } else {
-                let tempRow = rows[tableStartIndex - 1];
-                x_ticks = tempRow.words.map(word => word.text);
-                xcount = 0;
-                x_axis_label_shift = 2;
-                title_shift = 3;
-                // title OCR create a row with less than 3 characters, then we need to shift up
-                const titleTemp = exportTitle && tableStartIndex >= title_shift ?
-                    rows[tableStartIndex - title_shift].words.map(w => w.text).join(' ') :
-                    "";
-                if (titleTemp.length < 3) {
-                    x_axis_label_shift += 1;
-                    title_shift += 1;
+                if (tableStartIndex > 0) {
+                    let tempRow = rows[tableStartIndex - 1];
+                    x_ticks = tempRow.words.map(word => word.text);
+                    xcount = 0;
+                    x_axis_label_shift = 2;
+                    title_shift = 3;
+                    // title OCR create a row with less than 3 characters, then we need to shift up
+                    const titleTemp = exportTitle && tableStartIndex >= title_shift ?
+                        rows[tableStartIndex - title_shift].words.map(w => w.text).join(' ') :
+                        "";
+                    if (titleTemp.length < 3) {
+                        x_axis_label_shift += 1;
+                        title_shift += 1;
+                    }
+                } else {
+                    // Fallback if table starts at the top (no row above for x-ticks)
+                    // If tick row is NOT the first row (checked above), and there is no row above,
+                    // it implies we might be missing x-ticks or they are integrated?
+                    // For now, prevent crash.
+                    x_ticks = [];
                 }
             }
         }
@@ -392,7 +400,8 @@ class SVGXDataTableRendering {
         let y_axis_label = "";
         if (exportYAxisLabel) {
             const parts = [];
-            for (let i = tableStartIndex; i < rows.length; i++) {
+            let start = tableStartIndex >= 0 ? tableStartIndex : 0;
+            for (let i = start; i < rows.length; i++) {
                 const row = rows[i];
                 let overflow = row.words.length - (tableCount + ycount);
                 if (overflow > 0) {
@@ -437,7 +446,7 @@ class SVGXDataTableRendering {
         let ycount = 1;
         let xcount = 1;
 
-        const lines = tsvContent.trim().split('\n');
+        const lines = tsvContent.trim().split(/\r?\n/);
         const headers = lines[0].split('\t');
         const words = [];
 
@@ -593,7 +602,7 @@ class SVGXDataTableRendering {
         const width = parseFloat(allStyles.width);
         const height = parseFloat(allStyles.height);
         const svg = this._setupSVGCanvas(width, height, allStyles.bgColor);
-        const rows = csvTableData.trim().split("\n").map(r => r.split(",").map(c => parseFloat(c.replace(/[^0-g.\\-]/g, "")) || 0));
+        const rows = csvTableData.trim().split(/\r?\n/).map(r => r.split(",").map(c => parseFloat(c.replace(/[^0-g.\\-]/g, "")) || 0));
         if (!rows.length || !rows[0].length) return;
 
         // d3.js use domain and range to map data to screen coordinates  

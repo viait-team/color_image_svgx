@@ -14,7 +14,7 @@ class SVGXTsvVisual {
       throw new Error("TSV content and a valid root SVG element are required.");
     }
     if (typeof scale !== 'number' || isNaN(scale)) {
-        throw new Error("A valid number for the scale factor must be provided.");
+      throw new Error("A valid number for the scale factor must be provided.");
     }
     this.svgNode = svgNode;
     this.scale = scale;
@@ -32,11 +32,11 @@ class SVGXTsvVisual {
    * @private
    */
   _parseTsv(tsvContent) {
-    const lines = tsvContent.trim().split('\n');
+    const lines = tsvContent.trim().split(/\r?\n/);
     if (lines.length < 2) return [];
-    
+
     const headers = lines[0].split('\t');
-    
+
     return lines.slice(1).map(line => {
       const values = line.split('\t');
       const wordObj = headers.reduce((obj, header, i) => {
@@ -49,7 +49,7 @@ class SVGXTsvVisual {
       wordObj.width = Math.round(parseInt(wordObj.width, 10) * this.scale);
       wordObj.height = Math.round(parseInt(wordObj.height, 10) * this.scale);
       wordObj.conf = parseFloat(wordObj.conf);
-      
+
       return wordObj;
     }).filter(w => w.conf && w.conf > 60 && w.text && w.text.trim() !== "");
   }
@@ -64,7 +64,7 @@ class SVGXTsvVisual {
   _getCumulativeTransform(element) {
     let cumulativeTransform = { scaleX: 1.0, scaleY: 1.0, translateX: 0.0, translateY: 0.0 };
     let current = element;
-    
+
     const ancestors = [];
     while (current && current.tagName.toLowerCase() !== 'svg') {
       ancestors.push(current);
@@ -82,7 +82,7 @@ class SVGXTsvVisual {
           cumulativeTransform.translateX += tx * cumulativeTransform.scaleX;
           cumulativeTransform.translateY += ty * cumulativeTransform.scaleY;
         }
-        
+
         const scaleMatch = transformAttr.match(/scale\(\s*([\d\.-]+)\s*,?\s*([\d\.-]+)?\s*\)/);
         if (scaleMatch) {
           const sx = parseFloat(scaleMatch[1]);
@@ -92,7 +92,7 @@ class SVGXTsvVisual {
         }
       }
     }
-    
+
     return cumulativeTransform;
   }
 
@@ -166,7 +166,7 @@ class SVGXTsvVisual {
     const paths = this.svgNode.querySelectorAll("path");
 
     paths.forEach(path => {
-      
+
       const startPoint = this._getPathStartPoint(path);
       if (!startPoint) return;
 
@@ -174,7 +174,7 @@ class SVGXTsvVisual {
       // IT SHOULD NOT BE USED HERE.
       // It does not include transformations from parent elements (like `<g transform="scale(...)">`)
       // const bbox = path.getBBox();
-      
+
       const bbox = path.getBoundingClientRect(); // Use this instead of getBBox()
       const svgRect = this.svgNode.getBoundingClientRect();
 
@@ -201,12 +201,12 @@ class SVGXTsvVisual {
         const w_bottom = w_top + word.height;
 
         const isStartInside = startPoint.x >= (w_left - threshold) && startPoint.x <= (w_right + threshold) &&
-                              startPoint.y >= (w_top - threshold) && startPoint.y <= (w_bottom + threshold);
+          startPoint.y >= (w_top - threshold) && startPoint.y <= (w_bottom + threshold);
 
-        if (isStartInside) {   
+        if (isStartInside) {
           // if (bbox.width < (word.width + 2*threshold)) {
           if ((pathWidth * pathHeight) <= (word.width * word.height)) {
-            this.matchedPaths.add(path);          
+            this.matchedPaths.add(path);
             break;
           }
           // }
@@ -226,7 +226,7 @@ class SVGXTsvVisual {
     this.matchedPaths.clear();
 
     const paths = this.svgNode.querySelectorAll("path");
-    
+
     // --- PERFORMANCE IMPROVEMENT: Calculate these constant values only once. ---
     const svgRect = this.svgNode.getBoundingClientRect();
     const svgViewBox = this.svgNode.viewBox.baseVal;
@@ -247,18 +247,18 @@ class SVGXTsvVisual {
         const w_bottom = w_top + word.height;
 
         const isStartInside = startPoint.x >= (w_left - threshold) && startPoint.x <= (w_right + threshold) &&
-                              startPoint.y >= (w_top - threshold) && startPoint.y <= (w_bottom + threshold);
+          startPoint.y >= (w_top - threshold) && startPoint.y <= (w_bottom + threshold);
 
         if (isStartInside) {
           // This path is a candidate. Now, confirm it's the text itself, not a larger container.
-          
+
           // 1. Get the path's final rendered size in screen pixels using the reliable method.
           const pathScreenBbox = path.getBoundingClientRect();
-          
+
           // 2. Convert pixel dimensions to SVG user units for a correct comparison.
           const pathWidth = pathScreenBbox.width * scaleX;
           const pathHeight = pathScreenBbox.height * scaleY;
-          
+
           const pathArea = pathWidth * pathHeight;
           const wordArea = word.width * word.height;
 
@@ -285,7 +285,7 @@ class SVGXTsvVisual {
    */
   finalMatchPathsToWords(jsonOCRGroupsString) {
     console.log("Performing final group-based matching for missed paths...");
-    
+
     let ocrGroups;
     try {
       ocrGroups = JSON.parse(jsonOCRGroupsString);
@@ -333,7 +333,7 @@ class SVGXTsvVisual {
         const g_bottom = g_top + group.height;
 
         const isStartInside = startPoint.x >= (g_left - threshold) && startPoint.x <= (g_right + threshold) &&
-                              startPoint.y >= (g_top - threshold) && startPoint.y <= (g_bottom + threshold);
+          startPoint.y >= (g_top - threshold) && startPoint.y <= (g_bottom + threshold);
 
         if (isStartInside) {
           // --- BOUNDING BOX CHECK ADDED ---
@@ -375,16 +375,16 @@ class SVGXTsvVisual {
     let parentNode = null;
     console.log(`Removing ${this.matchedPaths.size} matched paths...`);
     this.matchedPaths.forEach(path => {
-        if (path && path.parentNode) {
-            
-            if(parentNode === null && path.parentNode.nodeName === 'g') {              
-              parentNode = path.parentNode;
-            }
+      if (path && path.parentNode) {
 
-            path.parentNode.removeChild(path);
+        if (parentNode === null && path.parentNode.nodeName === 'g') {
+          parentNode = path.parentNode;
         }
+
+        path.parentNode.removeChild(path);
+      }
     });
-    
+
     // Clear the set after removal
     this.matchedPaths.clear();
 
@@ -396,10 +396,10 @@ class SVGXTsvVisual {
   //
   removeSegmentsByMatchingWords() {
     console.log("Analyzing remaining paths for removable text segments...");
-    
+
     const remainingPaths = this.svgNode.querySelectorAll("path");
     if (remainingPaths.length === 0) {
-        return;
+      return;
     }
 
     let modifiedPathCount = 0;
@@ -411,7 +411,7 @@ class SVGXTsvVisual {
       if (!transform) return;
 
       const dAttribute = path.getAttribute('d');
-      const pathSegments =  this.svgxPathSegments.processPathData(dAttribute);
+      const pathSegments = this.svgxPathSegments.processPathData(dAttribute);
       if (!pathSegments || pathSegments.length < 1) {
         return;
       }
@@ -424,8 +424,8 @@ class SVGXTsvVisual {
       pathSegments.forEach(segment => {
 
         if (segment.segmentType === 'line') {
-              segmentsToKeep.push(segment);
-              return; // Done with this segment, move to the next.
+          segmentsToKeep.push(segment);
+          return; // Done with this segment, move to the next.
         }
 
         let isTextSegment = false;
@@ -439,19 +439,19 @@ class SVGXTsvVisual {
 
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         segment.points.forEach(p => {
-            const transformedX = (p.x * transform.scaleX) + transform.translateX;
-            const transformedY = (p.y * transform.scaleY) + transform.translateY;
-            minX = Math.min(minX, transformedX);
-            maxX = Math.max(maxX, transformedX);
-            minY = Math.min(minY, transformedY);
-            maxY = Math.max(maxY, transformedY);
+          const transformedX = (p.x * transform.scaleX) + transform.translateX;
+          const transformedY = (p.y * transform.scaleY) + transform.translateY;
+          minX = Math.min(minX, transformedX);
+          maxX = Math.max(maxX, transformedX);
+          minY = Math.min(minY, transformedY);
+          maxY = Math.max(maxY, transformedY);
         });
 
         if (!isFinite(minX)) {
-            segmentsToKeep.push(segment);
-            return;
+          segmentsToKeep.push(segment);
+          return;
         }
-        
+
         const areaThreshold = 8; // Minimum area to consider for removal
         const segmentArea = (maxX - minX) * (maxY - minY);
         const segmentWidth = (maxX - minX);
@@ -459,18 +459,18 @@ class SVGXTsvVisual {
 
         // 3. Perform the comparison using the correctly transformed points.
         for (const word of this.words) {
-          const isStartInside = transformedStartPoint.x >= (word.left - threshold) && 
-                                transformedStartPoint.x <= (word.left + word.width + threshold) &&
-                                transformedStartPoint.y >= (word.top - threshold) && 
-                                transformedStartPoint.y <= (word.top + word.height + threshold);
+          const isStartInside = transformedStartPoint.x >= (word.left - threshold) &&
+            transformedStartPoint.x <= (word.left + word.width + threshold) &&
+            transformedStartPoint.y >= (word.top - threshold) &&
+            transformedStartPoint.y <= (word.top + word.height + threshold);
 
           if (isStartInside) {
-            
-            if (segmentArea > 0 && segmentWidth < areaThreshold &&  segmentHeight < areaThreshold) {
+
+            if (segmentArea > 0 && segmentWidth < areaThreshold && segmentHeight < areaThreshold) {
               modifiedPathCount++;
               isTextSegment = true;
               foundTextSegments = true;
-              break; 
+              break;
             }
           }
         }
@@ -482,32 +482,32 @@ class SVGXTsvVisual {
 
       // 4. If text segments were found, reconstruct d string
       if (foundTextSegments) {
-          
+
         // 1. Get the array of new, simple d strings.
         const newDStrings = this.svgxPathSegments.getFinalPathDataArray(segmentsToKeep);
-        
+
         if (newDStrings.length > 0) {
-            // 2. Update the first path with the first new d string.
-            //    Also, copy all styling attributes from the original path.
-            path.setAttribute('d', newDStrings[0]);
-            
-            // 3. For any subsequent d strings, create NEW <path> elements.
-            for (let i = 1; i < newDStrings.length; i++) {
-                const newPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                
-                // 4. Copy all attributes from the original path (fill, stroke, transform, etc.)
-                for (const attr of path.attributes) {
-                     if (attr.name !== 'id') { 
-                        newPath.setAttribute(attr.name, attr.value);
-                     }
-                }
-                
-                // 5. Set the new d attribute.
-                newPath.setAttribute('d', newDStrings[i]);
-                
-                // 6. Insert the new path right after the original one.
-                path.parentNode.insertBefore(newPath, path.nextSibling);
+          // 2. Update the first path with the first new d string.
+          //    Also, copy all styling attributes from the original path.
+          path.setAttribute('d', newDStrings[0]);
+
+          // 3. For any subsequent d strings, create NEW <path> elements.
+          for (let i = 1; i < newDStrings.length; i++) {
+            const newPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+
+            // 4. Copy all attributes from the original path (fill, stroke, transform, etc.)
+            for (const attr of path.attributes) {
+              if (attr.name !== 'id') {
+                newPath.setAttribute(attr.name, attr.value);
+              }
             }
+
+            // 5. Set the new d attribute.
+            newPath.setAttribute('d', newDStrings[i]);
+
+            // 6. Insert the new path right after the original one.
+            path.parentNode.insertBefore(newPath, path.nextSibling);
+          }
         }
       }
     });
@@ -518,10 +518,10 @@ class SVGXTsvVisual {
 
   replaceSegmentsByMatchingWords() {
     console.log("Analyzing remaining paths for removable text segments...");
-    
+
     const remainingPaths = this.svgNode.querySelectorAll("path");
     if (remainingPaths.length === 0) {
-        return;
+      return;
     }
 
     let modifiedPathCount = 0;
@@ -533,7 +533,7 @@ class SVGXTsvVisual {
       if (!transform) return;
 
       const dAttribute = path.getAttribute('d');
-      const pathSegments =  this.svgxPathSegments.processPathData(dAttribute);
+      const pathSegments = this.svgxPathSegments.processPathData(dAttribute);
       if (!pathSegments || pathSegments.length < 1) {
         return;
       }
@@ -545,7 +545,7 @@ class SVGXTsvVisual {
       pathSegments.forEach(segment => {
 
         if (segment.segmentType === 'line') {
-              return; // Done with this segment, move to the next.
+          return; // Done with this segment, move to the next.
         }
 
         let isTextSegment = false;
@@ -559,18 +559,18 @@ class SVGXTsvVisual {
 
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
         segment.points.forEach(p => {
-            const transformedX = (p.x * transform.scaleX) + transform.translateX;
-            const transformedY = (p.y * transform.scaleY) + transform.translateY;
-            minX = Math.min(minX, transformedX);
-            maxX = Math.max(maxX, transformedX);
-            minY = Math.min(minY, transformedY);
-            maxY = Math.max(maxY, transformedY);
+          const transformedX = (p.x * transform.scaleX) + transform.translateX;
+          const transformedY = (p.y * transform.scaleY) + transform.translateY;
+          minX = Math.min(minX, transformedX);
+          maxX = Math.max(maxX, transformedX);
+          minY = Math.min(minY, transformedY);
+          maxY = Math.max(maxY, transformedY);
         });
 
         if (!isFinite(minX)) {
-            return;
+          return;
         }
-        
+
         const areaThreshold = 8; // Minimum area to consider for removal
         const segmentArea = (maxX - minX) * (maxY - minY);
         const segmentWidth = (maxX - minX);
@@ -578,18 +578,18 @@ class SVGXTsvVisual {
 
         // 3. Perform the comparison using the correctly transformed points.
         for (const word of this.words) {
-          const isStartInside = transformedStartPoint.x >= (word.left - threshold) && 
-                                transformedStartPoint.x <= (word.left + word.width + threshold) &&
-                                transformedStartPoint.y >= (word.top - threshold) && 
-                                transformedStartPoint.y <= (word.top + word.height + threshold);
+          const isStartInside = transformedStartPoint.x >= (word.left - threshold) &&
+            transformedStartPoint.x <= (word.left + word.width + threshold) &&
+            transformedStartPoint.y >= (word.top - threshold) &&
+            transformedStartPoint.y <= (word.top + word.height + threshold);
 
           if (isStartInside) {
-            
-            if (segmentArea > 0 && segmentWidth < word.width &&  segmentHeight < word.height) {
+
+            if (segmentArea > 0 && segmentWidth < word.width && segmentHeight < word.height) {
               modifiedPathCount++;
               foundTextSegments = true;
               segment.matched = true;
-              break; 
+              break;
             }
           }
         }
@@ -598,10 +598,10 @@ class SVGXTsvVisual {
 
       // 4. If text segments were found, reconstruct d string
       if (foundTextSegments) {
-          
+
         const newDStrings = this.svgxPathSegments.getFinalPathData(pathSegments);
         path.setAttribute('d', newDStrings);
-      
+
       }
     });
 
@@ -614,8 +614,8 @@ class SVGXTsvVisual {
   applyColorToSvg() {
     // Original functionality: Apply RGB coloring to SVG
     const groups = this.svgNode.querySelectorAll('g');
-    
-    if(groups.length === 3) {
+
+    if (groups.length === 3) {
       groups.forEach((g, i) => {
         const colors = ['red', 'green', 'gray'];
         g.setAttribute('fill', colors[i % 3]);
@@ -623,15 +623,15 @@ class SVGXTsvVisual {
 
       console.log('[LOG] Applied RGB coloring');
     }
-   
+
   }
 
-   /**
-   * Parses JSON content and inserts it into the SVG as <text> elements.
-   * Note: This function assumes the JSON content ALSO has scaled coordinates.
-   *
-   * @param {string} jsonContent The JSON string of structured OCR group data.
-   */
+  /**
+  * Parses JSON content and inserts it into the SVG as <text> elements.
+  * Note: This function assumes the JSON content ALSO has scaled coordinates.
+  *
+  * @param {string} jsonContent The JSON string of structured OCR group data.
+  */
   insertText(jsonContent, replacedParentNode = null) {
     let ocrGroups;
     try {
@@ -658,10 +658,10 @@ class SVGXTsvVisual {
     if (replacedParentNode != null) {
 
       for (let i = 0; i < replacedParentNode.attributes.length; i++) {
-            const attr = replacedParentNode.attributes[i];
-            if (attr.name !== "d" && attr.name !== "id" && attr.name !== "transform"  ) {
-                textGroup.setAttribute(attr.name, attr.value);
-            }
+        const attr = replacedParentNode.attributes[i];
+        if (attr.name !== "d" && attr.name !== "id" && attr.name !== "transform") {
+          textGroup.setAttribute(attr.name, attr.value);
+        }
       }
 
       if (textGroup.hasAttribute("style")) {
@@ -697,7 +697,7 @@ class SVGXTsvVisual {
         textElement.setAttribute("fill", "#666666");
         textElement.setAttribute("font-family", "Arial, sans-serif");
         textElement.textContent = text;
-    
+
         textGroup.appendChild(textElement);
 
       } else {
@@ -727,5 +727,5 @@ class SVGXTsvVisual {
     console.log("Text insertion complete.");
   }
 
-  
+
 }

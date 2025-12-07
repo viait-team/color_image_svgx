@@ -23,7 +23,7 @@ class SVGXTsvProcessor {
     }
 
     _mutateTSV(tsvText, useRelaxedRule = false) {
-        const lines = tsvText.trim().split('\n');
+        const lines = tsvText.trim().split(/\r?\n/);
         const header = lines[0].split('\t');
         const textIndex = header.indexOf('text');
 
@@ -49,16 +49,16 @@ class SVGXTsvProcessor {
             if (!text) continue;
 
             if (text.toLowerCase().includes('percent')) {
-            percentFound = true;
+                percentFound = true;
             }
 
             const numMatch = text.match(/^[-+]?\d+(\.\d+)?$/);
             if (numMatch) {
-            numericTotal++;
-            const decPart = numMatch[1];
-            if (decPart && decPart.length === 3) {
-                twoDecimalCount++;
-            }
+                numericTotal++;
+                const decPart = numMatch[1];
+                if (decPart && decPart.length === 3) {
+                    twoDecimalCount++;
+                }
             }
         }
 
@@ -84,12 +84,12 @@ class SVGXTsvProcessor {
 
             const numMatch = text.match(/^[-+]?\d+$/);
             if (numMatch && text.replace(/^[-+]/, '').length >= 3) {
-            const newText = transformNumber(text);
-            if (newText !== text) {
-                cols[textIndex] = newText;
-                mutatedCount++;
-                return cols.join('\t');
-            }
+                const newText = transformNumber(text);
+                if (newText !== text) {
+                    cols[textIndex] = newText;
+                    mutatedCount++;
+                    return cols.join('\t');
+                }
             }
 
             return line;
@@ -128,13 +128,13 @@ class SVGXTsvProcessor {
 
             // 1. --- DATA GATHERING AND SCALING ---
             // Process the provided file content string.
-            const wordData = this.fileContent.split('\n')
+            const wordData = this.fileContent.split(/\r?\n/)
                 .slice(1) // Skip header row
                 .map(line => {
                     const columns = line.split('\t');
                     // Handle potential empty or malformed lines gracefully.
                     if (columns.length < 12) return null;
-                    
+
                     // Create a structured object for each word and apply the scale factor.
                     return {
                         level: parseInt(columns[0], 10),
