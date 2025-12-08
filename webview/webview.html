@@ -309,7 +309,8 @@
       if (lctype === 'line') {
         // ===== LINE CHART RENDERING =====
         const rendering = new SVGXLineChartRendering(svg);
-        // TODO: Add line chart rendering logic
+        // Step 1: Add Logical Mapping (xlm, ylm)
+        rendering.addLogicalMapping();
         return;
       }
 
