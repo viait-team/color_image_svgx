@@ -568,10 +568,25 @@ def run_ocr_image(image_file, output_stem):
         verbose(f"Successfully created baseline TSV: '{tsv_baseline_file}'")
 
         # Step 2: Run PSM 6 - for numbers only
-        command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}_psm6" -l eng --psm 6 tsv'
-        process_command(command)
         tsv_psm6_file = f"{output_stem}_psm6.tsv"
-        verbose(f"Successfully created PSM 6 TSV: '{tsv_psm6_file}'")
+        with tempfile.TemporaryDirectory() as tmpdir:
+             # Intermediate file paths
+            bilevel_image_file_path = os.path.join(tmpdir, f"{base_name}_bilevel.png")
+
+            # ImageMagick commands
+            try:
+                # Create bilevel image
+                bilevel_cmd = [IMAGEMAGICK_CONVERT_PATH, image_file, "-type", "Bilevel", bilevel_image_file_path]
+                subprocess.run(bilevel_cmd, check=True, capture_output=True)
+                
+            except subprocess.CalledProcessError as e:
+                verbose(f"ImageMagick command failed for {image_file}: {e.stderr}")
+                bilevel_image_file_path = image_file
+
+            # Tesseract automatically adds the .tsv extension to the output stem
+            command = f'"{TESSERACT_PATH}" "{bilevel_image_file_path}" "{output_stem}_psm6" -l eng --psm 6 tsv'
+            process_command(command)
+            verbose(f"Successfully created PSM 6 TSV: '{tsv_psm6_file}'")
 
         # Step 3: Run PSM 12 - for vertical text at edges
         command = f'"{TESSERACT_PATH}" "{image_file}" "{output_stem}_psm12" -l eng --psm 12 tsv'
