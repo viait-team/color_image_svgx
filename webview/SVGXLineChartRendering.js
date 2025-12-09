@@ -276,7 +276,7 @@ class SVGXLineChartRendering {
         const paths = Array.from(this.svg.querySelectorAll('path'));
         const ticks = [];
 
-        const MAX_TICK_HEIGHT = svgHeight * 0.5;
+        const MAX_TICK_HEIGHT = svgHeight * 0.1;
         const MIN_TICK_HEIGHT = 3;
         const MAX_TICK_WIDTH = 5;
         const BOTTOM_EDGE_LIMIT = svgHeight * 0.70;
