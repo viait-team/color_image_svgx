@@ -311,6 +311,10 @@
         const rendering = new SVGXLineChartRendering(svg);
         // Step 1: Add Logical Mapping (xlm, ylm)
         rendering.addLogicalMapping();
+        // Step 2: Add Legend Info (lc_legend_id, lc_legend_instance, lc_legend_ref)
+        rendering.addLegendInfo();
+        // Step 3: Enable Interactivity (click legend -> flash lines)
+        rendering.enableLegendInteractivity();
         return;
       }
 

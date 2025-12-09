@@ -276,7 +276,7 @@ class SVGXLineChartRendering {
         const paths = Array.from(this.svg.querySelectorAll('path'));
         const ticks = [];
 
-        const MAX_TICK_HEIGHT = svgHeight * 0.1;
+        const MAX_TICK_HEIGHT = svgHeight * 0.4;
         const MIN_TICK_HEIGHT = 3;
         const MAX_TICK_WIDTH = 5;
         const BOTTOM_EDGE_LIMIT = svgHeight * 0.70;
@@ -549,5 +549,488 @@ class SVGXLineChartRendering {
         } catch (e) {
             return null;
         }
+    }
+
+    // ==============================================================================
+    // Legend Identification
+    // ==============================================================================
+
+    /**
+     * Main entry point for legend identification and data line association.
+     */
+    addLegendInfo() {
+        console.log("[LOG] SVGXLineChartRendering: Starting legend identification...");
+
+        try {
+            const svgRect = this.svg.viewBox.baseVal;
+            const svgWidth = svgRect.width || 1536;
+            const svgHeight = svgRect.height || 864;
+
+            // Step 1: Detect the legend box region
+            const legendBox = this._detectLegendBox(svgWidth, svgHeight);
+            if (!legendBox) {
+                console.warn("[WARN] Could not detect legend box.");
+                return;
+            }
+            console.log(`[LOG] Legend box detected: y=${legendBox.y.toFixed(0)}, height=${legendBox.height.toFixed(0)}`);
+
+            // Step 2: Find legend items (text + symbol pairs)
+            const legendItems = this._findLegendItems(legendBox, svgWidth, svgHeight);
+            if (legendItems.length === 0) {
+                console.warn("[WARN] No legend items found.");
+                return;
+            }
+            console.log(`[LOG] Found ${legendItems.length} legend items`);
+
+            // Step 3: Apply lc_legend_id and lc_legend_instance attributes
+            for (let i = 0; i < legendItems.length; i++) {
+                const item = legendItems[i];
+                if (item.textElement) {
+                    item.textElement.setAttribute('lc_legend_id', item.id);
+                }
+                if (item.symbolElement) {
+                    item.symbolElement.setAttribute('lc_legend_instance', item.id);
+                }
+                console.log(`[LOG] Legend: "${item.text}" -> id="${item.id}", color="${item.color}"`);
+            }
+
+            // Step 4: Find data lines and associate with legend
+            const dataLines = this._findDataLines(svgWidth, svgHeight);
+            console.log(`[LOG] Found ${dataLines.length} potential data lines`);
+
+            this._associateLinesWithLegend(dataLines, legendItems);
+
+        } catch (error) {
+            console.error("[ERROR] Failed to add legend info:", error);
+        }
+    }
+
+    /**
+     * Detects the legend box region by finding horizontally-aligned text elements.
+     */
+    _detectLegendBox(svgWidth, svgHeight) {
+        const texts = Array.from(this.svg.querySelectorAll('text'));
+        const candidates = [];
+
+        // Filter to texts in legend region (bottom 40% or right side)
+        const BOTTOM_THRESHOLD = svgHeight * 0.60;
+
+        for (let i = 0; i < texts.length; i++) {
+            const t = texts[i];
+            const box = this._getFullBBox(t);
+            if (!box) continue;
+
+            const text = t.textContent.trim();
+
+            // Skip numeric texts (axis labels)
+            if (/^[\d.,\-%$]+$/.test(text)) continue;
+
+            // Skip short texts (single chars)
+            if (text.length < 3) continue;
+
+            // Skip axis titles and source text
+            if (/^(years|percent|source|kamakura|trade date)/i.test(text)) continue;
+
+            // Must be in bottom region
+            if (box.y > BOTTOM_THRESHOLD) {
+                candidates.push({ element: t, box: box, text: text });
+            }
+        }
+
+        if (candidates.length < 2) return null;
+
+        // Group by similar y position (within 30px)
+        const groups = [];
+        for (let i = 0; i < candidates.length; i++) {
+            const c = candidates[i];
+            let foundGroup = false;
+            for (let g = 0; g < groups.length; g++) {
+                if (Math.abs(groups[g].y - c.box.cy) < 30) {
+                    groups[g].items.push(c);
+                    foundGroup = true;
+                    break;
+                }
+            }
+            if (!foundGroup) {
+                groups.push({ y: c.box.cy, items: [c] });
+            }
+        }
+
+        // Find the group with most items - that's the legend row
+        let bestGroup = null;
+        for (let i = 0; i < groups.length; i++) {
+            if (!bestGroup || groups[i].items.length > bestGroup.items.length) {
+                bestGroup = groups[i];
+            }
+        }
+
+        if (!bestGroup || bestGroup.items.length < 2) return null;
+
+        // Calculate bounding box
+        let minX = Infinity, maxX = 0, minY = Infinity, maxY = 0;
+        for (let i = 0; i < bestGroup.items.length; i++) {
+            const b = bestGroup.items[i].box;
+            if (b.x < minX) minX = b.x;
+            if (b.x + b.width > maxX) maxX = b.x + b.width;
+            if (b.y < minY) minY = b.y;
+            if (b.y + b.height > maxY) maxY = b.y + b.height;
+        }
+
+        return {
+            x: minX - 100,  // Expand to include symbols to the left
+            y: minY - 20,
+            width: maxX - minX + 150,
+            height: maxY - minY + 40,
+            items: bestGroup.items
+        };
+    }
+
+    /**
+     * Finds legend items (text + symbol pairs) within the legend box.
+     */
+    _findLegendItems(legendBox, svgWidth, svgHeight) {
+        const items = [];
+        const paths = Array.from(this.svg.querySelectorAll('path'));
+
+        // Use client rects and coordinate transformation as requested
+        const ctm = this.svg.getScreenCTM().inverse();
+        const pt = this.svg.createSVGPoint();
+
+        for (let i = 0; i < legendBox.items.length; i++) {
+            const textItem = legendBox.items[i];
+            const textBox = textItem.box;
+
+            let bestSymbol = null;
+            let bestDist = Infinity;
+
+            for (let j = 0; j < paths.length; j++) {
+                const p = paths[j];
+
+                // Get Client Rect
+                const rect = p.getBoundingClientRect();
+
+                // Check for valid rect
+                if (rect.width === 0 || rect.height === 0) continue;
+
+                // Transform 'left' and 'top' to user coordinates
+                pt.x = rect.left;
+                pt.y = rect.top;
+                const userPos = pt.matrixTransform(ctm);
+
+                // Transform width/height (approximation for size filtering)
+                // We use the bottom-right corner to map the vector
+                pt.x = rect.left + rect.width;
+                pt.y = rect.top + rect.height;
+                const userBottomRight = pt.matrixTransform(ctm);
+                const userW = Math.abs(userBottomRight.x - userPos.x);
+                const userH = Math.abs(userBottomRight.y - userPos.y);
+
+                // Basic Size & Pos Filtering to avoid unrelated elements
+                // Symbol must be small-ish (User limit: w<200, h<50)
+                if (userW >= 200 || userH >= 50) continue;
+
+                // Symbol must be to the left of text
+                if (userPos.x >= textBox.x) continue;
+
+                // Distance from Symbol Left/Top to Text Label
+                const dx = textBox.x - userPos.x;
+                const dy = Math.abs(textBox.y - userPos.y);
+
+                // Relaxed vertical check 
+                if (dy > 30) continue;
+
+                // Calculate distance metric (Euclidean distance to the text anchor)
+                const dist = Math.sqrt(dx * dx + dy * dy);
+
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestSymbol = p;
+                }
+            }
+
+            // Extract color from symbol
+            let color = '#000000';
+            if (bestSymbol) {
+                color = this._extractPathColor(bestSymbol);
+            }
+
+            // Generate legend ID from text
+            const legendId = this._generateLegendId(textItem.text);
+
+            items.push({
+                text: textItem.text,
+                textElement: textItem.element,
+                symbolElement: bestSymbol,
+                color: color,
+                id: legendId,
+                textBox: textBox
+            });
+        }
+
+        return items;
+    }
+
+    /**
+     * Generates a slug ID from legend text.
+     */
+    _generateLegendId(text) {
+        return text
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+    }
+
+    /**
+     * Extracts the effective color from a path element.
+     */
+    _extractPathColor(element) {
+        // Try fill attribute
+        let color = element.getAttribute('fill');
+        if (color && color !== 'none') return color;
+
+        // Try style fill
+        if (element.style.fill && element.style.fill !== 'none') {
+            return element.style.fill;
+        }
+
+        // Try stroke
+        color = element.getAttribute('stroke');
+        if (color && color !== 'none') return color;
+
+        // Try computed style
+        try {
+            const computed = window.getComputedStyle(element);
+            if (computed.fill && computed.fill !== 'none') return computed.fill;
+            if (computed.stroke && computed.stroke !== 'none') return computed.stroke;
+        } catch (e) { }
+
+        return '#000000';
+    }
+
+    /**
+     * Finds ALL paths in the chart area to check for color matches.
+     * We do NOT filter by size here, to catch dashed/dotted lines.
+     */
+    _findDataLines(svgWidth, svgHeight) {
+        const paths = Array.from(this.svg.querySelectorAll('path'));
+        const dataLines = [];
+
+        // Chart area bounds (exclude edges)
+        const LEFT_MARGIN = svgWidth * 0.08;
+        const RIGHT_MARGIN = svgWidth * 0.95;
+        const TOP_MARGIN = svgHeight * 0.05;
+        const BOTTOM_MARGIN = svgHeight * 0.85;
+
+        for (let i = 0; i < paths.length; i++) {
+            const p = paths[i];
+            const box = this._getFullBBox(p);
+            if (!box) continue;
+
+            // Skip paths heavily outside chart area
+            if (box.x + box.width < LEFT_MARGIN || box.x > RIGHT_MARGIN) continue;
+            if (box.y + box.height < TOP_MARGIN || box.y > BOTTOM_MARGIN) continue;
+
+            // Skip already-processed legend symbols
+            if (p.hasAttribute('lc_legend_instance')) continue;
+
+            // Skip huge background rects (e.g. > 90% of chart size)
+            if (box.width > svgWidth * 0.9 && box.height > svgHeight * 0.9) continue;
+
+            const color = this._extractPathColor(p);
+
+            dataLines.push({
+                element: p,
+                box: box,
+                color: color
+            });
+        }
+
+        // DEBUG: Log color histogram
+        const colorCounts = {};
+        dataLines.forEach(l => {
+            const c = this._normalizeColor(l.color);
+            colorCounts[c] = (colorCounts[c] || 0) + 1;
+        });
+        console.log("[DEBUG] Chart Area Color Histogram:");
+        Object.entries(colorCounts)
+            .sort((a, b) => b[1] - a[1]) // Sort by count desc
+            .slice(0, 10) // Top 10
+            .forEach(([color, count]) => {
+                console.log(`   ${color}: ${count} items`);
+            });
+
+        return dataLines;
+    }
+
+    /**
+     * Associates data lines with legend items by matching colors.
+     */
+    /**
+     * Associates data lines with legend items by matching colors.
+     * Since we now check ALL paths, we MUST rely on strict color matching.
+     */
+    _associateLinesWithLegend(dataLines, legendItems) {
+        let matchCount = 0;
+        console.log(`[LOG] Associating from ${dataLines.length} candidate paths...`);
+
+        // Check each data line against all legend items
+        for (let i = 0; i < dataLines.length; i++) {
+            const line = dataLines[i];
+            const lineColor = this._normalizeColor(line.color);
+            let bestMatch = null;
+            let minDistance = Infinity;
+
+            for (let j = 0; j < legendItems.length; j++) {
+                const legendItem = legendItems[j];
+                const legendColor = this._normalizeColor(legendItem.color);
+
+                // Calculate distance
+                const dist = this._getColorDistance(lineColor, legendColor);
+
+                // Tolerance: 60 units (approx 20% in RGB space) to handle significant color shifts
+                // We strictly enforce this tolerance.
+                if (dist < 60 && dist < minDistance) {
+                    minDistance = dist;
+                    bestMatch = legendItem;
+                }
+            }
+
+            if (bestMatch) {
+                line.element.setAttribute('lc_legend_ref', bestMatch.id);
+                matchCount++;
+            }
+        }
+
+        console.log(`[LOG] Associated ${matchCount} data lines with legend items`);
+    }
+
+    /**
+     * Calculates Euclidean distance between two colors in RGB space.
+     * Colors must be hex strings (e.g. "#rrggbb").
+     */
+    _getColorDistance(c1, c2) {
+        if (!c1 || !c2 || !c1.startsWith('#') || !c2.startsWith('#')) return Infinity;
+
+        const r1 = parseInt(c1.substring(1, 3), 16);
+        const g1 = parseInt(c1.substring(3, 5), 16);
+        const b1 = parseInt(c1.substring(5, 7), 16);
+
+        const r2 = parseInt(c2.substring(1, 3), 16);
+        const g2 = parseInt(c2.substring(3, 5), 16);
+        const b2 = parseInt(c2.substring(5, 7), 16);
+
+        return Math.sqrt(
+            Math.pow(r1 - r2, 2) +
+            Math.pow(g1 - g2, 2) +
+            Math.pow(b1 - b2, 2)
+        );
+    }
+
+    /**
+     * Normalizes a color to a comparable format (hex).
+     */
+    _normalizeColor(color) {
+        if (!color) return '';
+
+        color = color.trim().toLowerCase();
+
+        // Already hex
+        if (color.startsWith('#')) {
+            if (color.length === 4) { // #RGB -> #RRGGBB
+                return '#' + color[1] + color[1] + color[2] + color[2] + color[3] + color[3];
+            }
+            return color;
+        }
+
+        // RGB format
+        const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (rgbMatch) {
+            const r = parseInt(rgbMatch[1]).toString(16).padStart(2, '0');
+            const g = parseInt(rgbMatch[2]).toString(16).padStart(2, '0');
+            const b = parseInt(rgbMatch[3]).toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+        }
+
+        return color; // Return as is if unknown format
+    }
+
+    /**
+     * Enables interactivity: clicking legend label flashes corresponding data lines.
+     */
+    enableLegendInteractivity() {
+        console.log("[LOG] SVGXLineChartRendering: Enabling legend interactivity...");
+
+        const legendLabels = Array.from(this.svg.querySelectorAll('text[lc_legend_id]'));
+
+        legendLabels.forEach(label => {
+            // Style cursor to indicate clickable
+            label.style.cursor = 'pointer';
+
+            // Add click listener
+            label.addEventListener('click', () => {
+                const legendId = label.getAttribute('lc_legend_id');
+                console.log(`[LOG] Legend clicked: ${legendId}`);
+                this._flashDataLines(legendId);
+            });
+        });
+    }
+
+    /**
+     * Flashes matching data lines for a given legend ID.
+     */
+    /**
+     * Flashes matching data lines for a given legend ID.
+     */
+    _flashDataLines(legendId) {
+        const lines = Array.from(this.svg.querySelectorAll(`path[lc_legend_ref="${legendId}"]`));
+        if (lines.length === 0) return;
+
+        console.log(`[LOG] Flashing ${lines.length} lines for legend ${legendId}`);
+
+        lines.forEach(line => {
+            // Get effective color to use for highlighting
+            const color = this._extractPathColor(line);
+
+            // Save original styles
+            const originalStroke = line.style.stroke;
+            const originalStrokeWidth = line.style.strokeWidth || line.getAttribute('stroke-width') || '1';
+            const originalOpacity = line.style.opacity || '1';
+            const originalFill = line.style.fill;
+
+            // Apply flash effect
+            // 1. Force stroke color (Red for high visibility)
+            line.style.stroke = 'red';
+
+            // 2. Make it thick
+            line.style.transition = 'all 0.2s ease-in-out';
+            line.style.strokeWidth = '40px'; // Very thick to be obvious
+
+            // 3. Briefly dim it before brightening (flash effect)
+            line.style.opacity = '0.5';
+
+            // bring to front
+            if (line.parentNode) {
+                line.parentNode.appendChild(line);
+            }
+
+            // Timeline:
+            // 0ms: Start (thick, dim)
+            // 100ms: Brighten (full opacity)
+            setTimeout(() => {
+                line.style.opacity = '1';
+            }, 100);
+
+            // 600ms: Revert
+            setTimeout(() => {
+                line.style.strokeWidth = originalStrokeWidth;
+                line.style.stroke = originalStroke; // Remove forced stroke
+                line.style.opacity = originalOpacity;
+
+                setTimeout(() => {
+                    line.style.transition = '';
+                    // Restore original fill if needed (though we didn't change it)
+                }, 200);
+            }, 600);
+        });
     }
 }
