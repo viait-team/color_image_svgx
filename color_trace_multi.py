@@ -838,6 +838,17 @@ def q1_job(q2, total, layers, settings, findex, input, output):
             raise Exception("One of the arguments 'colors' or 'remap' must be specified")
         palette = make_palette(this_reduced)
 
+        # Save the palette to a .clr file
+        clr_output_path = os.path.splitext(output)[0] + '.clr'
+        try:
+            with open(clr_output_path, 'w', encoding='utf-8') as clr_file:
+                for color in palette:
+                    clr_file.write(f"{color}\n")
+            verbose(f"Saved color palette to '{clr_output_path}'")
+        except Exception as e:
+            # Print to stderr as this is a worker process.
+            print(f"\nAn error occurred while saving .clr file for '{input}': {e}", file=sys.stderr)
+
         # update total based on the number of colors in palette
         if settings['colors'] is not None:
             total.value -= settings['colors'] - len(palette)

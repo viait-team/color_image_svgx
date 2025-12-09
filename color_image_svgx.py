@@ -395,6 +395,17 @@ def color_trace_sequential(args):
                 # 3. Get Palette and original width
                 palette = make_palette(reduced_path)
                 width = get_width(input_file)
+
+                # Save the palette to a .clr file
+                clr_output_path = os.path.splitext(output_file)[0] + '.clr'
+                try:
+                    with open(clr_output_path, 'w', encoding='utf-8') as clr_file:
+                        for color in palette:
+                            clr_file.write(f"{color}\n")
+                    verbose(f"Saved color palette to '{clr_output_path}'")
+                except Exception as e:
+                    print(f"\nAn error occurred while saving .clr file for '{input_file}': {e}", file=sys.stderr)
+
                 
                 if args.background:
                     bg_color_lower = args.background.lower()

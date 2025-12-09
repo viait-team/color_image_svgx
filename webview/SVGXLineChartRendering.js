@@ -3,11 +3,13 @@
 ///
 
 class SVGXLineChartRendering {
-    constructor(svgElement) {
+    constructor(svgElement, clrContent = null) {
         this.svg = svgElement;
         if (!this.svg) {
             throw new Error('SVG element is not defined.');
         }
+        // Parse the .clr file content into a Set for efficient lookups
+        this.officialPalette = clrContent ? new Set(clrContent.trim().split(/\r?\n/).map(c => this._normalizeColor(c))) : null;
         console.log('[LOG] Line chart renderer initialized');
     }
 
@@ -55,7 +57,7 @@ class SVGXLineChartRendering {
 
                 const ylm_string = `[${y1.logical.toFixed(2)}, ${y2.logical.toFixed(2)}, ${y1.visual.toFixed(2)}, ${y2.visual.toFixed(2)}]`;
                 this.svg.setAttribute("ylm", ylm_string);
-                this._highlightMatches(yPairs, 'red');
+                // this._highlightMatches(yPairs, 'red');
                 console.log(`[LOG] Final result: ylm=${ylm_string}`);
             }
 
@@ -86,7 +88,7 @@ class SVGXLineChartRendering {
                     const x2 = xPairs[xPairs.length - 1];
                     const xlm_string = `[${x1.logical.toFixed(2)}, ${x2.logical.toFixed(2)}, ${x1.visual.toFixed(2)}, ${x2.visual.toFixed(2)}]`;
                     this.svg.setAttribute("xlm", xlm_string);
-                    this._highlightMatches(xPairs, 'orange');
+                    // this._highlightMatches(xPairs, 'orange');
                     console.log(`[LOG] Final result: xlm=${xlm_string}`);
                 }
             }
@@ -117,10 +119,10 @@ class SVGXLineChartRendering {
                     linePos: box.cy,
                     width: box.width
                 });
-                p.setAttribute('fill', 'red');
-                p.setAttribute('stroke', 'red');
-                p.setAttribute('stroke-width', '20');
-                p.parentNode.appendChild(p);
+                // p.setAttribute('fill', 'red');
+                // p.setAttribute('stroke', 'red');
+                // p.setAttribute('stroke-width', '20');
+                // p.parentNode.appendChild(p);
             }
         });
         return lines;
@@ -149,10 +151,10 @@ class SVGXLineChartRendering {
                     linePos: box.cy,
                     width: box.width
                 });
-                p.setAttribute('fill', 'blue');
-                p.setAttribute('stroke', 'blue');
-                p.setAttribute('stroke-width', '2');
-                p.parentNode.appendChild(p);
+                // p.setAttribute('fill', 'blue');
+                // p.setAttribute('stroke', 'blue');
+                // p.setAttribute('stroke-width', '2');
+                // p.parentNode.appendChild(p);
             }
         });
         return ticks;
@@ -181,10 +183,10 @@ class SVGXLineChartRendering {
                     linePos: box.cx,
                     height: box.height
                 });
-                p.setAttribute('fill', 'green');
-                p.setAttribute('stroke', 'green');
-                p.setAttribute('stroke-width', '2');
-                p.parentNode.appendChild(p);
+                // p.setAttribute('fill', 'green');
+                // p.setAttribute('stroke', 'green');
+                // p.setAttribute('stroke-width', '2');
+                // p.parentNode.appendChild(p);
             }
         });
         return lines;
@@ -195,8 +197,6 @@ class SVGXLineChartRendering {
         const ticks = [];
         const MAX_TICK_HEIGHT = svgHeight * 0.4;
         const MIN_TICK_HEIGHT = 3;
-
-        // BUG 1 FIX: Increase tolerance to 10 to handle small window resize/anti-aliasing
         const MAX_TICK_WIDTH = 10;
 
         const BOTTOM_EDGE_LIMIT = svgHeight * 0.70;
@@ -217,10 +217,10 @@ class SVGXLineChartRendering {
                     linePos: box.cx,
                     height: box.height
                 });
-                p.setAttribute('fill', 'cyan');
-                p.setAttribute('stroke', 'cyan');
-                p.setAttribute('stroke-width', '2');
-                p.parentNode.appendChild(p);
+                // p.setAttribute('fill', 'cyan');
+                // p.setAttribute('stroke', 'cyan');
+                // p.setAttribute('stroke-width', '2');
+                // p.parentNode.appendChild(p);
             }
         });
         return ticks;
@@ -399,7 +399,12 @@ class SVGXLineChartRendering {
                 }
                 console.log(`[LOG] Legend: "${item.text}" -> id="${item.id}", color="${item.color}"`);
             }
-            const dataLines = this._findDataLines(svgWidth, svgHeight);
+            // Pass the official palette to the data line finding function
+            const dataLines = this._findDataLines(svgWidth, svgHeight, this.officialPalette);
+            if (this.officialPalette) {
+                console.log(`[LOG] Using an official palette of ${this.officialPalette.size} colors for matching.`);
+            }
+
             console.log(`[LOG] Found ${dataLines.length} potential data lines`);
             this._associateLinesWithLegend(dataLines, legendItems);
         } catch (error) {
@@ -407,7 +412,7 @@ class SVGXLineChartRendering {
         }
     }
 
-    _detectLegendBox(svgWidth, svgHeight) {
+    _detectLegendBox(svgWidth, svgHeight) { // No changes, just for context
         const texts = Array.from(this.svg.querySelectorAll('text'));
         const candidates = [];
         const BOTTOM_THRESHOLD = svgHeight * 0.60;
@@ -491,7 +496,6 @@ class SVGXLineChartRendering {
 
                 if (userW >= 200 || userH >= 50) continue;
 
-                // BUG 2 FIX Part A: Filter out tiny noise to avoid picking artifacts
                 if (userW < 1 || userH < 1) continue;
 
                 if (userPos.x >= textBox.x) continue;
@@ -526,9 +530,6 @@ class SVGXLineChartRendering {
             }
 
             const legendId = this._generateLegendId(textItem.text);
-            // if (legendId === 'par-coupon-yields') {
-            //    color = '#0749FE';
-            // }
             items.push({
                 text: textItem.text,
                 textElement: textItem.element,
@@ -559,7 +560,7 @@ class SVGXLineChartRendering {
         return '#000000';
     }
 
-    _findDataLines(svgWidth, svgHeight) {
+    _findDataLines(svgWidth, svgHeight, officialPalette) {
         const paths = Array.from(this.svg.querySelectorAll('path'));
         const dataLines = [];
         const LEFT_MARGIN = svgWidth * 0.08;
@@ -575,18 +576,26 @@ class SVGXLineChartRendering {
             if (box.y + box.height < TOP_MARGIN || box.y > BOTTOM_MARGIN) continue;
             if (p.hasAttribute('lc_legend_instance')) continue;
             if (box.width > svgWidth * 0.9 && box.height > svgHeight * 0.9) continue;
-
+    
             const color = this._extractPathColor(p);
-            dataLines.push({ element: p, box: box, color: color });
+            const normalizedColor = this._normalizeColor(color);
+    
+            // If an official palette is provided, only consider paths that use a palette color.
+            // This dramatically reduces noise from anti-aliased or background shapes.
+            if (officialPalette) {
+                if (officialPalette.has(normalizedColor)) {
+                    dataLines.push({ element: p, box: box, color: color });
+                }
+            } else {
+                // Fallback to the old behavior if no palette is available.
+                dataLines.push({ element: p, box: box, color: color });
+            }
         }
+    
         const colorCounts = {};
         dataLines.forEach(l => {
             const c = this._normalizeColor(l.color);
             colorCounts[c] = (colorCounts[c] || 0) + 1;
-        });
-        console.log("[DEBUG] Chart Area Color Histogram:");
-        Object.entries(colorCounts).sort((a, b) => b[1] - a[1]).slice(0, 10).forEach(([color, count]) => {
-            console.log(`   ${color}: ${count} items`);
         });
         return dataLines;
     }
