@@ -79,7 +79,7 @@
     <button class="icon-button" id="open-btn" title="Open SVG File">📂</button>
     <button class="icon-button" id="open-tsv-btn" title="Open TSV File">📄</button>
     <button class="icon-button" id="convert-btn" title="Convert to SVGX">🎨</button>
-     <button class="icon-button" id="open-clr-btn" title="Open CLR Palette File">🌈</button>
+    <button class="icon-button" id="open-clr-btn" title="Open CLR Palette File">🌈</button>
     <button class="icon-button" id="plot-btn" title="Plot">📈</button>
     <input type="file" id="file-input" accept=".svg" />
     <input type="file" id="tsv-file-input" accept=".tsv" />
@@ -338,6 +338,17 @@
         rendering.addLegendInfo();
         // Step 3: Enable Interactivity (click legend -> flash lines)
         rendering.enableLegendInteractivity();
+
+        // Step 4: Extract Data and Redraw
+        const chartData = rendering.extractLogicalData();
+        console.log('[LOG] Calling redrawChart with', chartData.length, 'series');
+        rendering.redrawChart(chartData, '#new-svg-container');
+
+        // Scroll to show the new chart
+        const newContainer = document.getElementById('new-svg-container');
+        if (newContainer) {
+          newContainer.scrollIntoView({ behavior: 'smooth' });
+        }
         return;
       }
 

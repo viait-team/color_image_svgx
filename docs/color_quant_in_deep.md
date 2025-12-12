@@ -98,3 +98,10 @@ Please review SVGXLineChartRendering.js file.  Please do not change code. Just e
  3.3 After all marker path is done,
     We go through all un asscoaited paths again, we match line with legend color.
   
+ # Here is the next three tasks
+
+  ## EXtract Logical data for each trace corresponding to each legend item using logical mapping xlm and ylm.
+
+  ## Extract the style for each trace.
+
+  ## Redraw the SVG Chart using d3.js. The goal is to best match the original SVG chart.    

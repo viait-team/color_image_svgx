@@ -389,6 +389,8 @@ class SVGXLineChartRendering {
                 return;
             }
             console.log(`[LOG] Found ${legendItems.length} legend items`);
+            this.legendItems = legendItems; // Save for later use in extraction
+
             for (let i = 0; i < legendItems.length; i++) {
                 const item = legendItems[i];
                 if (item.textElement) {
@@ -632,9 +634,58 @@ class SVGXLineChartRendering {
         const legendLines = legendItems.filter(item => item.lc_legend_type === 'line');
         const unassociatedPaths = new Set(dataLines);
 
+        // Get chart area bounds from xlm/ylm if available
+        let chartArea = null;
+        const xlmStr = this.svg.getAttribute('xlm');
+        const ylmStr = this.svg.getAttribute('ylm');
+        if (xlmStr && ylmStr) {
+            try {
+                const xlm = xlmStr.split(',').map(Number);
+                const ylm = ylmStr.split(',').map(Number);
+                if (xlm.length === 4 && ylm.length === 4) {
+                    chartArea = {
+                        xMin: Math.min(xlm[2], xlm[3]),
+                        xMax: Math.max(xlm[2], xlm[3]),
+                        yMin: Math.min(ylm[2], ylm[3]),
+                        yMax: Math.max(ylm[2], ylm[3])
+                    };
+                    // Add small tolerance
+                    const marginX = (chartArea.xMax - chartArea.xMin) * 0.01;
+                    const marginY = (chartArea.yMax - chartArea.yMin) * 0.01;
+                    chartArea.xMin -= marginX;
+                    chartArea.xMax += marginX;
+                    chartArea.yMin -= marginY;
+                    chartArea.yMax += marginY;
+                }
+            } catch (e) { console.warn("Failed to parse bounds for marker check", e); }
+        }
+
         // --- Step 1: Marker Association ---
         if (legendMarkers.length > 0) {
             this._initializePaper();
+
+            // Helper to check if marker is valid for a specific legend item
+            const isValidMarkerForLegend = (line, legendItem) => {
+                // 1. Size Check relative to legend symbol
+                if (legendItem.symbolElement) {
+                    try {
+                        const legBox = legendItem.symbolElement.getBBox();
+                        const lineBox = line.box;
+                        // Determine scaling factors or direct size comparison
+                        // We use a simplified check: width and height must be at least 90% of legend symbol
+                        // Or allow for some rotation/scaling differences by checking area or average dimension
+                        const legDim = Math.max(legBox.width, legBox.height);
+                        const lineDim = Math.max(lineBox.width, lineBox.height);
+
+                        // Strict check: dimensions must be comparable
+                        // User requirement: path size should not be less than 90% of legend symbol size
+                        if (lineDim < legDim * 0.9) {
+                            return false;
+                        }
+                    } catch (e) { /* ignore BBox errors */ }
+                }
+                return true;
+            };
 
             // Case A: Single Marker Type
             if (legendMarkers.length === 1) {
@@ -643,6 +694,9 @@ class SVGXLineChartRendering {
 
                 for (const line of dataLines) {
                     if (this._isMarkerCandidate(line)) {
+                        // Apply specific checks
+                        if (!isValidMarkerForLegend(line, legendMarker)) continue;
+
                         const lineColor = this._normalizeColor(line.color);
                         const dist = this._getColorDistance(lineColor, legendColor);
                         if (dist < 60) { // Color match
@@ -661,6 +715,9 @@ class SVGXLineChartRendering {
                         let bestScore = -1;
 
                         for (const legendMarker of legendMarkers) {
+                            // Apply specific checks
+                            if (!isValidMarkerForLegend(line, legendMarker)) continue;
+
                             const score = this._calculateMarkerScore(line, legendMarker);
                             if (score > bestScore) {
                                 bestScore = score;
@@ -865,5 +922,484 @@ class SVGXLineChartRendering {
                 }, 200);
             }, 600);
         });
+    }
+
+    // ==============================================================================
+    // Data Extraction and Redrawing
+    // ==============================================================================
+
+    /**
+     * Extracts logical data for each trace/legend item using xlm and ylm mappings.
+     * Uses path sampling for accurate coordinate extraction from curves.
+     * @returns {Array} Array of series objects with id, name, type, style, and data points
+     */
+    extractLogicalData() {
+        console.log("[LOG] SVGXLineChartRendering: Extracting logical data...");
+
+        const xlmAttr = this.svg.getAttribute('xlm');
+        const ylmAttr = this.svg.getAttribute('ylm');
+
+        if (!xlmAttr || !ylmAttr) {
+            console.warn("[WARN] Missing xlm or ylm attributes. Cannot extract logical data.");
+            return [];
+        }
+
+        // Parse xlm/ylm using a helper to handle both JSON and CSV
+        const parseMapping = (attr) => {
+            if (!attr) return null;
+            try {
+                return JSON.parse(attr);
+            } catch (e) {
+                return attr.split(',').map(Number);
+            }
+        };
+
+        const xMapping = parseMapping(xlmAttr);
+        const yMapping = parseMapping(ylmAttr);
+
+        if (!xMapping || xMapping.length !== 4 || !yMapping || yMapping.length !== 4) {
+            console.warn("[WARN] Invalid xlm or ylm attributes.");
+            return [];
+        }
+
+        console.log(`[LOG] X Mapping: logical=[${xMapping[0]}, ${xMapping[1]}], visual=[${xMapping[2]}, ${xMapping[3]}]`);
+        console.log(`[LOG] Y Mapping: logical=[${yMapping[0]}, ${yMapping[1]}], visual=[${yMapping[2]}, ${yMapping[3]}]`);
+
+        if (!this.legendItems || this.legendItems.length === 0) {
+            console.warn("[WARN] Legend items not processed. Run addLegendInfo() first.");
+            return [];
+        }
+
+        const extractedSeries = [];
+
+        this.legendItems.forEach(legendItem => {
+            const seriesId = legendItem.id;
+            const seriesName = legendItem.text;
+            const seriesType = legendItem.lc_legend_type;
+
+            // Find all paths associated with this legend item
+            const associatedPaths = Array.from(this.svg.querySelectorAll(`path[lc_legend_ref="${seriesId}"]`));
+
+            if (associatedPaths.length === 0) {
+                console.log(`[LOG] No paths found for series: ${seriesName}`);
+                return;
+            }
+
+            console.log(`[LOG] Processing series: ${seriesName} (${associatedPaths.length} paths)`);
+
+            // Extract style from the first path
+            const style = this._extractTraceStyle(associatedPaths[0]);
+
+            // Collect all points from all associated paths
+            const allVisualPoints = [];
+
+            associatedPaths.forEach(path => {
+                const points = this._extractPointsFromPath(path);
+                allVisualPoints.push(...points);
+            });
+
+            // Debug: show visual coordinate range
+            if (allVisualPoints.length > 0) {
+                const visXs = allVisualPoints.map(p => p.x);
+                const visYs = allVisualPoints.map(p => p.y);
+                console.log(`[DEBUG] Series "${seriesName}" visual X range: [${Math.min(...visXs).toFixed(1)}, ${Math.max(...visXs).toFixed(1)}]`);
+                console.log(`[DEBUG] Series "${seriesName}" visual Y range: [${Math.min(...visYs).toFixed(1)}, ${Math.max(...visYs).toFixed(1)}]`);
+                console.log(`[DEBUG] Y mapping: logical=[${yMapping[0]}, ${yMapping[1]}], visual=[${yMapping[2]}, ${yMapping[3]}]`);
+            }
+
+            const logicalData = allVisualPoints.map(pt => {
+                // toLogicalX: dx_min + (vx - vx_min) * (dx_max - dx_min) / (vx_max - vx_min)
+                // Use explicit pairing: xMapping[0] maps to xMapping[2]
+                const logicalX = this._toLogicalX(pt.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+
+                // toLogicalY: dy_min + (vy - vy_min) * (dy_max - dy_min) / (vy_max - vy_min)
+                // Use explicit pairing: yMapping[0] maps to yMapping[2]
+                // Do NOT swap visual min/max - rely on strict 0->2, 1->3 pairing
+                const logicalY = this._toLogicalY(pt.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
+                return { x: logicalX, y: logicalY };
+            });
+
+            // Sort by X for line charts (avoid zigzag lines)
+            logicalData.sort((a, b) => a.x - b.x);
+
+            // Remove duplicate points (within tolerance)
+            const uniqueData = this._removeDuplicatePoints(logicalData, 0.001);
+
+            extractedSeries.push({
+                id: seriesId,
+                name: seriesName,
+                type: seriesType,
+                style: style,
+                data: uniqueData
+            });
+
+            console.log(`[LOG] Series "${seriesName}": ${uniqueData.length} unique points extracted`);
+            if (uniqueData.length > 0) {
+                console.log(`[LOG]   First point: (${uniqueData[0].x.toFixed(2)}, ${uniqueData[0].y.toFixed(2)})`);
+                console.log(`[LOG]   Last point: (${uniqueData[uniqueData.length - 1].x.toFixed(2)}, ${uniqueData[uniqueData.length - 1].y.toFixed(2)})`);
+            }
+        });
+
+        console.log(`[LOG] Extracted ${extractedSeries.length} series total.`);
+        console.log("[LOG] Chart data:", JSON.stringify(extractedSeries.map(s => ({ id: s.id, name: s.name, type: s.type, points: s.data.length })), null, 2));
+        return extractedSeries;
+    }
+
+    /**
+     * Convert visual X coordinate to logical X value.
+     * Formula: dx_min + (vx - vx_min) * (dx_max - dx_min) / (vx_max - vx_min)
+     */
+    _toLogicalX(vx, dx_min, dx_max, vx_min, vx_max) {
+        if (vx_max === vx_min) {
+            return dx_min;
+        }
+        return dx_min + (vx - vx_min) * (dx_max - dx_min) / (vx_max - vx_min);
+    }
+
+    /**
+     * Convert visual Y coordinate to logical Y value.
+     * Formula: dy_min + (vy - vy_min) * (dy_max - dy_min) / (vy_max - vy_min)
+     */
+    _toLogicalY(vy, dy_min, dy_max, vy_min, vy_max) {
+        if (vy_min === vy_max) {
+            return dy_min;
+        }
+        return dy_min + (vy - vy_min) * (dy_max - dy_min) / (vy_max - vy_min);
+    }
+
+    /**
+     * Extracts points from a path element with robust coordinate transformation.
+     * Uses getScreenCTM() to map local points to Screen space, then maps back 
+     * to Root SVG User space using the root's inverted ScreenCTM.
+     * This guarantees consistency with validator.js and _getFullBBox logic.
+     * @param {SVGPathElement} pathElement 
+     * @returns {Array<{x: number, y: number}>}
+     */
+    _extractPointsFromPath(pathElement) {
+        const points = [];
+
+        try {
+            const totalLength = pathElement.getTotalLength();
+            if (totalLength === 0) return points;
+
+            // Prepare transformation matrices
+            // 1. Path Local -> Screen
+            const pathCTM = pathElement.getScreenCTM();
+            // 2. Screen -> Root SVG User Space
+            const rootCTM = this.svg.getScreenCTM();
+
+            if (!pathCTM || !rootCTM) {
+                console.warn("[WARN] Could not get Screen CTM. Falling back to simple sampling.");
+                // Fallback (simple sampling without transform or just local)
+                // If we can't get CTM, we likely can't normalize coordinates correctly.
+                return [];
+            }
+
+            const inverseRootCTM = rootCTM.inverse();
+
+            // Sample points
+            // Use a fixed step size (e.g. 10px) to smooth out potrace noise
+            const stepSize = 10;
+            const numSamples = Math.ceil(totalLength / stepSize);
+
+            // Re-use a single point object for matrix transformations to reduce garbage
+            let pt = this.svg.createSVGPoint();
+
+            for (let i = 0; i <= numSamples; i++) {
+                const length = (i / numSamples) * totalLength;
+                const localPoint = pathElement.getPointAtLength(length);
+
+                // Set point coords
+                pt.x = localPoint.x;
+                pt.y = localPoint.y;
+
+                // 1. Transform to Screen Space
+                const screenPt = pt.matrixTransform(pathCTM);
+
+                // 2. Transform to Root SVG Space
+                const rootPt = screenPt.matrixTransform(inverseRootCTM);
+
+                points.push({ x: rootPt.x, y: rootPt.y });
+            }
+        } catch (e) {
+            console.warn("[WARN] Failed to sample path:", e);
+            try {
+                // Final Fallback: BBox center
+                const bbox = pathElement.getBBox();
+                points.push({ x: bbox.x + bbox.width / 2, y: bbox.y + bbox.height / 2 });
+            } catch (e2) {
+                // Ignore
+            }
+        }
+
+        return points;
+    }
+
+    /**
+     * Removes duplicate points within a tolerance.
+     * @param {Array<{x: number, y: number}>} points 
+     * @param {number} tolerance 
+     * @returns {Array<{x: number, y: number}>}
+     */
+    _removeDuplicatePoints(points, tolerance) {
+        if (points.length === 0) return [];
+
+        const unique = [points[0]];
+        for (let i = 1; i < points.length; i++) {
+            const prev = unique[unique.length - 1];
+            const curr = points[i];
+            const dx = Math.abs(curr.x - prev.x);
+            const dy = Math.abs(curr.y - prev.y);
+            if (dx > tolerance || dy > tolerance) {
+                unique.push(curr);
+            }
+        }
+        return unique;
+    }
+
+    /**
+     * Extracts visual style properties from a path element.
+     * @param {SVGPathElement} pathElement 
+     * @returns {Object} Style object with stroke, strokeWidth, etc.
+     */
+    _extractTraceStyle(pathElement) {
+        const computed = window.getComputedStyle(pathElement);
+
+        // Get stroke - check attribute first, then style, then computed
+        let stroke = pathElement.getAttribute('stroke');
+        if (!stroke || stroke === 'none') stroke = pathElement.style.stroke;
+        if (!stroke || stroke === 'none') stroke = computed.stroke;
+
+        // Get fill
+        let fill = pathElement.getAttribute('fill');
+        if (!fill) fill = pathElement.style.fill;
+        if (!fill) fill = computed.fill;
+
+        // Get stroke-width
+        let strokeWidth = pathElement.getAttribute('stroke-width');
+        if (!strokeWidth) strokeWidth = pathElement.style.strokeWidth;
+        if (!strokeWidth) strokeWidth = computed.strokeWidth;
+
+        // Get stroke-dasharray
+        let strokeDasharray = pathElement.getAttribute('stroke-dasharray');
+        if (!strokeDasharray) strokeDasharray = pathElement.style.strokeDasharray;
+        if (!strokeDasharray) strokeDasharray = computed.strokeDasharray;
+
+        // Get stroke-opacity
+        let strokeOpacity = pathElement.getAttribute('stroke-opacity');
+        if (!strokeOpacity) strokeOpacity = pathElement.style.strokeOpacity;
+        if (!strokeOpacity) strokeOpacity = computed.strokeOpacity;
+
+        return {
+            stroke: stroke || '#000000',
+            fill: fill || 'none',
+            strokeWidth: strokeWidth || '1',
+            strokeDasharray: strokeDasharray || 'none',
+            strokeOpacity: strokeOpacity || '1'
+        };
+    }
+
+    /**
+     * Backwards compatible wrapper for extractTraceStyles
+     */
+    extractTraceStyles(pathElement) {
+        return this._extractTraceStyle(pathElement);
+    }
+
+    /**
+     * Redraws the chart using D3.js to match the original as closely as possible.
+     * @param {Array} chartData - Array of series data from extractLogicalData()
+     * @param {string} containerSelector - CSS selector for the container element
+     */
+    redrawChart(chartData, containerSelector) {
+        console.log(`[LOG] Redrawing chart into ${containerSelector}...`);
+        const container = document.querySelector(containerSelector);
+        if (!container) {
+            console.warn(`[WARN] Container ${containerSelector} not found.`);
+            return;
+        }
+
+        container.innerHTML = ''; // Clear
+
+        if (chartData.length === 0) {
+            console.warn("[WARN] No chart data to draw.");
+            return;
+        }
+
+        // Get original SVG dimensions for reference
+        const originalViewBox = this.svg.viewBox.baseVal;
+        const originalWidth = originalViewBox.width || 800;
+        const originalHeight = originalViewBox.height || 500;
+
+        // Use similar aspect ratio but reasonable size
+        const width = Math.min(originalWidth, 1200);
+        const aspectRatio = originalHeight / originalWidth;
+        const height = width * aspectRatio;
+
+        const margin = { top: 40, right: 150, bottom: 60, left: 80 };
+        const plotWidth = width - margin.left - margin.right;
+        const plotHeight = height - margin.top - margin.bottom;
+
+        // Create SVG
+        const svg = d3.select(container).append("svg")
+            .attr("width", width)
+            .attr("height", height)
+            .attr("viewBox", `0 0 ${width} ${height}`)
+            .style("background", "#ffffff")
+            .style("font-family", "sans-serif");
+
+        // Create chart group with margins
+        const chartGroup = svg.append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        // Collect all data points to determine scales
+        let allPoints = [];
+        chartData.forEach(series => allPoints = allPoints.concat(series.data));
+
+        if (allPoints.length === 0) {
+            console.warn("[WARN] No data points to plot.");
+            return;
+        }
+
+        const xExtent = d3.extent(allPoints, d => d.x);
+        const yExtent = d3.extent(allPoints, d => d.y);
+
+        // Add some padding to the domain
+        const xPadding = (xExtent[1] - xExtent[0]) * 0.02;
+        const yPadding = (yExtent[1] - yExtent[0]) * 0.05;
+
+        const xScale = d3.scaleLinear()
+            .domain([xExtent[0] - xPadding, xExtent[1] + xPadding])
+            .range([0, plotWidth]);
+
+        const yScale = d3.scaleLinear()
+            .domain([0, 8])
+            .range([plotHeight, 0]);
+
+        // Draw grid lines
+        chartGroup.append("g")
+            .attr("class", "grid")
+            .attr("opacity", 0.3)
+            .call(d3.axisLeft(yScale)
+                .tickSize(-plotWidth)
+                .tickFormat("")
+            )
+            .selectAll("line")
+            .attr("stroke", "#ccc");
+
+        chartGroup.append("g")
+            .attr("class", "grid")
+            .attr("transform", `translate(0,${plotHeight})`)
+            .attr("opacity", 0.3)
+            .call(d3.axisBottom(xScale)
+                .tickSize(-plotHeight)
+                .tickFormat("")
+            )
+            .selectAll("line")
+            .attr("stroke", "#ccc");
+
+        // Draw X axis
+        const xAxis = chartGroup.append("g")
+            .attr("transform", `translate(0,${plotHeight})`)
+            .call(d3.axisBottom(xScale));
+        xAxis.selectAll("line").attr("stroke", "black");
+        xAxis.selectAll("path").attr("stroke", "black");
+        xAxis.selectAll("text").style("font-size", "12px").style("fill", "black");
+
+        // Draw Y axis
+        const yAxis = chartGroup.append("g")
+            .call(d3.axisLeft(yScale));
+        yAxis.selectAll("line").attr("stroke", "black");
+        yAxis.selectAll("path").attr("stroke", "black");
+        yAxis.selectAll("text").style("font-size", "12px").style("fill", "black");
+
+        // Line generator
+        const lineGenerator = d3.line()
+            .x(d => xScale(d.x))
+            .y(d => yScale(d.y));
+
+        // Hardcoded colors for visibility (will extract colors later)
+        const colorPalette = [
+            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+        ];
+
+        // Draw each series
+        chartData.forEach((series, index) => {
+            if (series.data.length === 0) return;
+
+            // Use hardcoded color from palette for now
+            const strokeColor = colorPalette[index % colorPalette.length];
+            const strokeWidth = 2;
+
+            console.log(`[LOG] Drawing series "${series.name}" with color ${strokeColor}, ${series.data.length} points`);
+
+            // For line type or when we have multiple points
+            if (series.type === 'line' || series.data.length > 1) {
+                chartGroup.append("path")
+                    .datum(series.data)
+                    .attr("fill", "none")
+                    .attr("stroke", strokeColor)
+                    .attr("stroke-width", strokeWidth)
+                    .attr("d", lineGenerator);
+            }
+
+            // For marker type, also draw dots at data points
+            if (series.type === 'marker') {
+                chartGroup.selectAll(`.marker-${index}`)
+                    .data(series.data)
+                    .enter().append("circle")
+                    .attr("cx", d => xScale(d.x))
+                    .attr("cy", d => yScale(d.y))
+                    .attr("r", 4)
+                    .attr("fill", strokeColor)
+                    .attr("stroke", strokeColor)
+                    .attr("stroke-width", 1);
+            }
+        });
+
+        // Draw Legend - Horizontal at bottom
+        const legend = svg.append("g")
+            .attr("transform", `translate(${margin.left}, ${height - margin.bottom + 45})`);
+
+        let xOffset = 0;
+        chartData.forEach((series, index) => {
+            const legendItem = legend.append("g")
+                .attr("transform", `translate(${xOffset}, 0)`);
+
+            const legendColor = colorPalette[index % colorPalette.length];
+
+            // Legend line or marker
+            if (series.type === 'marker') {
+                legendItem.append("circle")
+                    .attr("cx", 10)
+                    .attr("cy", 0)
+                    .attr("r", 5)
+                    .attr("fill", legendColor);
+            } else {
+                legendItem.append("line")
+                    .attr("x1", 0)
+                    .attr("y1", 0)
+                    .attr("x2", 20)
+                    .attr("y2", 0)
+                    .attr("stroke", legendColor)
+                    .attr("stroke-width", 2);
+            }
+
+            // Legend text
+            const textElement = legendItem.append("text")
+                .attr("x", 25)
+                .attr("y", 4)
+                .text(series.name)
+                .style("font-size", "12px")
+                .style("fill", "#333");
+
+            // Calculate width for next item placement
+            // Estimate width since we can't measure text easily in this context without rendering
+            const textWidth = series.name.length * 7;
+            xOffset += 35 + textWidth;
+        });
+
+        console.log(`[LOG] Chart redrawn with ${chartData.length} series.`);
     }
 }
