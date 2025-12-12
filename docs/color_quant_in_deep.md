@@ -78,7 +78,23 @@ This new workflow provides a robust and deterministic way to link visual data tr
 
 
 # Legend_symbol_type
-Back to SVGXLineChartRendering.js file. I need to identify symbol for legend is line or marker aslo. Please do not change code. Just explore the idea how to accurately to do so?
+Please review SVGXLineChartRendering.js file.  Please do not change code. Just explore the idea how to accurately to do so? Write a implementation plan in legend_symbol_type.md file in the docs folder. We will encode the legend and the association as we have done in the code by using lc_legend_id, lc_legend_ref, and lc_legend_instance.
 
-if one have one marker, we just distinguish marker and line, and with colors. The tasks is done.
-if we have more markers, we can exclude line first, the we have a collection of legend markers. Now we have a path to identify which marker is belonging to? That makes the problem domain clear now?
+1. Need to identify symbol for legend is line or marker.
+
+2. if we have only one marker.
+
+2.1 We go through all path match with this marker and color first.
+
+2.2  After all marker path is done,
+    We go through all un asscoaited paths again, we match line with legend color.
+
+3. if we have more markers.
+    we have a collection of legend markers. 
+    We go through all paths. For each path, 
+    3.1 Identify the path as marker or not.
+    3.2 If it is marker path,  score the marker path with each legend marker in the legend marker collection by using paper.js. We need to develop a robust scoring function.
+
+ 3.3 After all marker path is done,
+    We go through all un asscoaited paths again, we match line with legend color.
+  

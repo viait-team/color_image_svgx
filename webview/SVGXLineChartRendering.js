@@ -397,7 +397,7 @@ class SVGXLineChartRendering {
                 if (item.symbolElement) {
                     item.symbolElement.setAttribute('lc_legend_instance', item.id);
                 }
-                console.log(`[LOG] Legend: "${item.text}" -> id="${item.id}", color="${item.color}"`);
+                console.log(`[LOG] Legend: "${item.text}" -> id="${item.id}", color="${item.color}", type="${item.lc_legend_type}"`);
             }
             // Pass the official palette to the data line finding function
             const dataLines = this._findDataLines(svgWidth, svgHeight, this.officialPalette);
@@ -509,19 +509,34 @@ class SVGXLineChartRendering {
                     candidates.push({
                         element: p,
                         dist: dist,
-                        area: userW * userH
+                        area: userW * userH,
+                        width: userW,
+                        height: userH
                     });
                 }
             }
 
             let bestSymbol = null;
+            let legendType = 'line'; // Default to line
+
             if (candidates.length > 0) {
                 // BUG 2 FIX Part B: Sort candidates by area to pick the inner symbol
                 candidates.sort((a, b) => a.dist - b.dist);
                 const minDist = candidates[0].dist;
                 const closeCandidates = candidates.filter(c => c.dist <= minDist + 5);
                 closeCandidates.sort((a, b) => a.area - b.area);
-                bestSymbol = closeCandidates[0].element;
+                const bestCandidate = closeCandidates[0];
+                bestSymbol = bestCandidate.element;
+
+                // Determine type based on aspect ratio and size
+                const ratio = bestCandidate.width / bestCandidate.height;
+                // Markers typically have aspect ratio close to 1 and are small?
+                // Or maybe just based on size?
+                // Let's use the logic from the plan:
+                // Marker: small size (< 30px?), aspect ratio 0.5 < r < 2.0
+                if (bestCandidate.width < 30 && bestCandidate.height < 30 && ratio > 0.5 && ratio < 2.0) {
+                    legendType = 'marker';
+                }
             }
 
             let color = '#000000';
@@ -530,14 +545,22 @@ class SVGXLineChartRendering {
             }
 
             const legendId = this._generateLegendId(textItem.text);
-            items.push({
+
+            const legendItem = {
                 text: textItem.text,
                 textElement: textItem.element,
                 symbolElement: bestSymbol,
                 color: color,
                 id: legendId,
-                textBox: textBox
-            });
+                textBox: textBox,
+                lc_legend_type: legendType
+            };
+
+            if (bestSymbol) {
+                bestSymbol.setAttribute('lc_legend_type', legendType);
+            }
+
+            items.push(legendItem);
         }
         return items;
     }
@@ -576,10 +599,10 @@ class SVGXLineChartRendering {
             if (box.y + box.height < TOP_MARGIN || box.y > BOTTOM_MARGIN) continue;
             if (p.hasAttribute('lc_legend_instance')) continue;
             if (box.width > svgWidth * 0.9 && box.height > svgHeight * 0.9) continue;
-    
+
             const color = this._extractPathColor(p);
             const normalizedColor = this._normalizeColor(color);
-    
+
             // If an official palette is provided, only consider paths that use a palette color.
             // This dramatically reduces noise from anti-aliased or background shapes.
             if (officialPalette) {
@@ -591,7 +614,7 @@ class SVGXLineChartRendering {
                 dataLines.push({ element: p, box: box, color: color });
             }
         }
-    
+
         const colorCounts = {};
         dataLines.forEach(l => {
             const c = this._normalizeColor(l.color);
@@ -603,26 +626,171 @@ class SVGXLineChartRendering {
     _associateLinesWithLegend(dataLines, legendItems) {
         let matchCount = 0;
         console.log(`[LOG] Associating from ${dataLines.length} candidate paths...`);
-        for (let i = 0; i < dataLines.length; i++) {
-            const line = dataLines[i];
+
+        // Group legend items
+        const legendMarkers = legendItems.filter(item => item.lc_legend_type === 'marker');
+        const legendLines = legendItems.filter(item => item.lc_legend_type === 'line');
+        const unassociatedPaths = new Set(dataLines);
+
+        // --- Step 1: Marker Association ---
+        if (legendMarkers.length > 0) {
+            this._initializePaper();
+
+            // Case A: Single Marker Type
+            if (legendMarkers.length === 1) {
+                const legendMarker = legendMarkers[0];
+                const legendColor = this._normalizeColor(legendMarker.color);
+
+                for (const line of dataLines) {
+                    if (this._isMarkerCandidate(line)) {
+                        const lineColor = this._normalizeColor(line.color);
+                        const dist = this._getColorDistance(lineColor, legendColor);
+                        if (dist < 60) { // Color match
+                            line.element.setAttribute('lc_legend_ref', legendMarker.id);
+                            unassociatedPaths.delete(line);
+                            matchCount++;
+                        }
+                    }
+                }
+            }
+            // Case B: Multi-Marker Types
+            else {
+                for (const line of dataLines) {
+                    if (this._isMarkerCandidate(line)) {
+                        let bestMatch = null;
+                        let bestScore = -1;
+
+                        for (const legendMarker of legendMarkers) {
+                            const score = this._calculateMarkerScore(line, legendMarker);
+                            if (score > bestScore) {
+                                bestScore = score;
+                                bestMatch = legendMarker;
+                            }
+                        }
+
+                        // Threshold for score?
+                        if (bestMatch && bestScore > 0.6) { // Heuristic threshold
+                            line.element.setAttribute('lc_legend_ref', bestMatch.id);
+                            unassociatedPaths.delete(line);
+                            matchCount++;
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Step 2: Line Association (Remaining unassociated paths) ---
+        for (const line of unassociatedPaths) {
             const lineColor = this._normalizeColor(line.color);
             let bestMatch = null;
             let minDistance = Infinity;
-            for (let j = 0; j < legendItems.length; j++) {
-                const legendItem = legendItems[j];
-                const legendColor = this._normalizeColor(legendItem.color);
+
+            for (const legendLine of legendLines) {
+                const legendColor = this._normalizeColor(legendLine.color);
                 const dist = this._getColorDistance(lineColor, legendColor);
                 if (dist < 60 && dist < minDistance) {
                     minDistance = dist;
-                    bestMatch = legendItem;
+                    bestMatch = legendLine;
                 }
             }
+
             if (bestMatch) {
                 line.element.setAttribute('lc_legend_ref', bestMatch.id);
                 matchCount++;
             }
         }
+
         console.log(`[LOG] Associated ${matchCount} data lines with legend items`);
+    }
+
+    _initializePaper() {
+        if (typeof paper !== 'undefined' && !paper.project) {
+            const canvas = document.createElement('canvas');
+            paper.setup(canvas);
+        }
+    }
+
+    _isMarkerCandidate(line) {
+        // Check if the path looks like a marker based on bounding box
+        // Logic: small size, aspect ratio ~1
+        const box = line.box; // Assuming line has {element, box, color}
+        if (!box) return false;
+
+        const MAX_MARKER_SIZE = 30; // 30px
+        if (box.width > MAX_MARKER_SIZE || box.height > MAX_MARKER_SIZE) return false;
+
+        const ratio = box.width / box.height;
+        if (ratio < 0.5 || ratio > 2.0) return false;
+
+        return true;
+    }
+
+    _calculateMarkerScore(line, legendMarker) {
+        if (!legendMarker.symbolElement) return 0;
+
+        // 1. Color Score
+        const lineColor = this._normalizeColor(line.color);
+        const legendColor = this._normalizeColor(legendMarker.color);
+        const colorDist = this._getColorDistance(lineColor, legendColor);
+        const colorScore = Math.max(0, 1 - (colorDist / 100)); // Normalize 0-100 diff to 1-0 score
+
+        // 2. Shape Score using Paper.js
+        let shapeScore = 0;
+        try {
+            const pathData1 = line.element.getAttribute('d');
+            const pathData2 = legendMarker.symbolElement.getAttribute('d');
+
+            if (pathData1 && pathData2) {
+                const p1 = new paper.Path(pathData1);
+                const p2 = new paper.Path(pathData2);
+
+                // Normalize positions to (0,0)
+                p1.position = new paper.Point(0, 0);
+                p2.position = new paper.Point(0, 0);
+
+                // Normalize size - Scale to fit in 20x20 box
+                const bounds1 = p1.bounds;
+                const bounds2 = p2.bounds;
+
+                const scale1 = 20 / Math.max(bounds1.width, bounds1.height);
+                const scale2 = 20 / Math.max(bounds2.width, bounds2.height);
+
+                p1.scale(scale1);
+                p2.scale(scale2);
+
+                // Compare Area
+                const area1 = Math.abs(p1.area);
+                const area2 = Math.abs(p2.area);
+                const areaRatio = Math.min(area1, area2) / (Math.max(area1, area2) + 0.0001);
+
+                // Additional check: Intersection Area (IoU logic simplified)
+                // Paper.js boolean operations might be heavy/unstable, let's stick to area + perimeter properties for now
+                // Or try simple boolean intersection if possible
+                // let intersectArea = 0;
+                // try {
+                //      const intersection = p1.intersect(p2);
+                //      intersectArea = Math.abs(intersection.area);
+                //      intersection.remove();
+                // } catch(e) {}
+                // const iou = intersectArea / (area1 + area2 - intersectArea);
+
+                // Use simple property comparison for robustness
+                // Compare perimeter
+                const len1 = p1.length;
+                const len2 = p2.length;
+                const lenRatio = Math.min(len1, len2) / (Math.max(len1, len2) + 0.0001);
+
+                shapeScore = (areaRatio * 0.5) + (lenRatio * 0.5);
+
+                p1.remove();
+                p2.remove();
+            }
+        } catch (e) {
+            console.warn("Shape scoring failed", e);
+        }
+
+        // Weighted mix
+        return (colorScore * 0.4) + (shapeScore * 0.6);
     }
 
     _getColorDistance(c1, c2) {
