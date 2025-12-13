@@ -548,7 +548,7 @@ class SVGXLineChartRendering {
                 const minDist = candidates[0].dist;
                 const closeCandidates = candidates.filter(c => c.dist <= minDist + 5);
                 closeCandidates.sort((a, b) => a.area - b.area);
-                const bestCandidate = closeCandidates[0];
+                let bestCandidate = closeCandidates[0];
                 bestSymbol = bestCandidate.element;
 
                 // Determine type based on aspect ratio and size
@@ -558,6 +558,10 @@ class SVGXLineChartRendering {
                 // Let's use the logic from the plan:
                 // Marker: small size (< 30px?), aspect ratio 0.5 < r < 2.0
                 if (bestCandidate.width < 30 && bestCandidate.height < 30 && ratio > 0.5 && ratio < 2.0) {
+
+                    bestCandidate = candidates[0];
+                    bestSymbol = bestCandidate.element;
+
                     legendType = 'marker';
                 }
             }
@@ -599,14 +603,26 @@ class SVGXLineChartRendering {
     _extractPathColor(element) {
         let color = element.getAttribute('fill');
         if (color && color !== 'none') return color;
-        if (element.style.fill && element.style.fill !== 'none') return element.style.fill;
+
         color = element.getAttribute('stroke');
         if (color && color !== 'none') return color;
+
+        // Check parent element attributes only (no style)
+        const parent = element.parentElement;
+        if (parent) {
+            let parentColor = parent.getAttribute('fill');
+            if (parentColor && parentColor !== 'none') return parentColor;
+
+            parentColor = parent.getAttribute('stroke');
+            if (parentColor && parentColor !== 'none') return parentColor;
+        }
+
         try {
             const computed = window.getComputedStyle(element);
             if (computed.fill && computed.fill !== 'none') return computed.fill;
             if (computed.stroke && computed.stroke !== 'none') return computed.stroke;
         } catch (e) { }
+
         return '#000000';
     }
 
@@ -717,27 +733,27 @@ class SVGXLineChartRendering {
             this._initializePaper();
 
             // Helper to check if marker is valid for a specific legend item
-            const isValidMarkerForLegend = (line, legendItem) => {
-                // 1. Size Check relative to legend symbol
-                if (legendItem.symbolElement) {
-                    try {
-                        const legBox = legendItem.symbolElement.getBBox();
-                        const lineBox = line.box;
-                        // Determine scaling factors or direct size comparison
-                        // We use a simplified check: width and height must be at least 90% of legend symbol
-                        // Or allow for some rotation/scaling differences by checking area or average dimension
-                        const legDim = Math.max(legBox.width, legBox.height);
-                        const lineDim = Math.max(lineBox.width, lineBox.height);
-
-                        // Strict check: dimensions must be comparable
-                        // User requirement: path size should not be less than 90% of legend symbol size
-                        if (lineDim < legDim * 0.9) {
-                            return false;
-                        }
-                    } catch (e) { /* ignore BBox errors */ }
-                }
-                return true;
-            };
+            /*   const isValidMarkerForLegend = (line, legendItem) => {
+                  // 1. Size Check relative to legend symbol
+                  if (legendItem.symbolElement) {
+                      try {
+                          const legBox = legendItem.symbolElement.getBBox();
+                          const lineBox = line.box;
+                          // Determine scaling factors or direct size comparison
+                          // We use a simplified check: width and height must be at least 90% of legend symbol
+                          // Or allow for some rotation/scaling differences by checking area or average dimension
+                          const legDim = Math.max(legBox.width, legBox.height);
+                          const lineDim = Math.max(lineBox.width, lineBox.height);
+  
+                          // Strict check: dimensions must be comparable
+                          // User requirement: path size should not be less than 90% of legend symbol size
+                          if (lineDim < legDim * 1.5) {
+                              return false;
+                          }
+                      } catch (e) { }
+                  }
+                  return true;
+              }; */
 
             // Case A: Single Marker Type
             if (legendMarkers.length === 1) {
@@ -747,7 +763,7 @@ class SVGXLineChartRendering {
                 for (const line of dataLines) {
                     if (this._isMarkerCandidate(line)) {
                         // Apply specific checks
-                        if (!isValidMarkerForLegend(line, legendMarker)) continue;
+                        // if (!isValidMarkerForLegend(line, legendMarker)) continue;
 
                         const lineColor = this._normalizeColor(line.color);
                         const dist = this._getColorDistance(lineColor, legendColor);
@@ -768,7 +784,7 @@ class SVGXLineChartRendering {
 
                         for (const legendMarker of legendMarkers) {
                             // Apply specific checks
-                            if (!isValidMarkerForLegend(line, legendMarker)) continue;
+                            // if (!isValidMarkerForLegend(line, legendMarker)) continue;
 
                             const score = this._calculateMarkerScore(line, legendMarker);
                             if (score > bestScore) {
