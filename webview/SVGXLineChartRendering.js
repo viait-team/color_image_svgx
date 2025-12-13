@@ -1327,10 +1327,10 @@ class SVGXLineChartRendering {
     }
 
     /**
-       * OPTIMIZED Vertical Scanline Decomposition.
-       * Fixes performance by reusing objects and increasing scan step.
-       * Fixes "missing markers" by tuning the threshold sensitivity.
-       */
+     * OPTIMIZED Vertical Scanline Decomposition.
+     * Fixes performance by reusing objects and increasing scan step.
+     * Fixes "missing markers" by tuning the threshold sensitivity.
+     */
     _extractPointsFromPath(pathElement) {
         // 1. Setup Transforms
         let ctm = null;
@@ -1345,8 +1345,23 @@ class SVGXLineChartRendering {
             return [];
         }
 
-        // OPTIMIZATION 1: Create the point object ONCE to avoid Garbage Collection churn
         const pt = this.svg.createSVGPoint();
+
+        // --- NEW SECTION: Get Legend Marker Width ---
+        let legendW = 15;
+        try {
+            const legendId = pathElement.getAttribute('lc_legend_ref');
+            if (legendId && this.legendItems) {
+                const item = this.legendItems.find(i => i.id === legendId);
+                if (item && item.symbolElement) {
+                    const bbox = item.symbolElement.getBBox();
+                    if (bbox.width > 0) legendW = bbox.width;
+                }
+            }
+        } catch (e) { }
+
+        // LOGIC: Enforce split if marker group is wider than Legend OR 8px (whichever is smaller)
+        const splitLimit = Math.min(legendW, 13.0);
 
         // 2. Sample the Path (The Tube Scan)
         const len = pathElement.getTotalLength();
@@ -1354,18 +1369,15 @@ class SVGXLineChartRendering {
 
         const buckets = new Map();
 
-        // OPTIMIZATION 2: Increase step to 2.0. 
-        // 1px is overkill for thickness detection; 4px cuts execution time by 50%.
+        // Keep Step = 4.0 as requested
         const step = 4.0;
 
         for (let i = 0; i < len; i += step) {
             const rawPt = pathElement.getPointAtLength(i);
 
-            // Reuse the single point object
             pt.x = rawPt.x;
             pt.y = rawPt.y;
 
-            // Perform transform
             let transformedPt = pt;
             if (ctm && inverseRootCTM) {
                 transformedPt = pt.matrixTransform(ctm).matrixTransform(inverseRootCTM);
@@ -1382,33 +1394,47 @@ class SVGXLineChartRendering {
             }
         }
 
-        // 3. Convert to Array
+        // 3. Convert to Array (Raw Vertical Heights)
         let rawPoints = [];
-        // Sorting is fast enough (N is small after bucketing)
         const sortedKeys = Array.from(buckets.keys()).sort((a, b) => a - b);
 
         sortedKeys.forEach(x => {
             const b = buckets.get(x);
             const vHeight = Math.abs(b.max - b.min);
             const midY = (b.min + b.max) / 2;
-            rawPoints.push({ x: x, y: midY, vHeight: vHeight });
+            if (vHeight > 0.1) {
+                rawPoints.push({ x: x, y: midY, vHeight: vHeight });
+            }
         });
 
         if (rawPoints.length === 0) return [];
 
-        // 4. Slope Correction
+        // 4. Perpendicular Thickness Calculation
+        // Modified to use Trend Slope + Cosine Correction
         const processedPoints = [];
 
         for (let i = 0; i < rawPoints.length; i++) {
             const p = rawPoints[i];
-            const prev = rawPoints[Math.max(0, i - 2)];
-            const next = rawPoints[Math.min(rawPoints.length - 1, i + 2)];
-            const dx = next.x - prev.x;
-            const dy = next.y - prev.y;
+
+            // Handle Start/End neighbors explicitly to avoid Index Out Of Bounds
+            let idx1, idx2;
+            if (i === 0) {
+                idx1 = 0; idx2 = Math.min(rawPoints.length - 1, 1);
+            } else if (i === rawPoints.length - 1) {
+                idx1 = Math.max(0, i - 1); idx2 = i;
+            } else {
+                idx1 = i - 1; idx2 = i + 1;
+            }
+
+            const p1 = rawPoints[idx1];
+            const p2 = rawPoints[idx2];
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
 
             let slope = 0;
             if (dx !== 0) slope = dy / dx;
 
+            // T = H * cos(theta)
             const cosTheta = 1 / Math.sqrt(1 + slope * slope);
             const trueThickness = p.vHeight * cosTheta;
 
@@ -1419,47 +1445,56 @@ class SVGXLineChartRendering {
             });
         }
 
-        // 5. Smoothing
-        const smoothedPoints = processedPoints.map((p, i, arr) => {
-            const start = Math.max(0, i - 2);
-            const end = Math.min(arr.length, i + 3);
-            let sum = 0;
-            let count = 0;
-            for (let j = start; j < end; j++) {
-                sum += arr[j].thickness;
-                count++;
-            }
-            return { ...p, thickness: sum / count };
-        });
-
-        // 6. Thresholding
-        // Filter tiny widths to find the median "Line" thickness
-        const widths = smoothedPoints.map(p => p.thickness).filter(w => w > 0.5);
+        // 5. Statistics & Safety Caps
+        const widths = processedPoints.map(p => p.thickness).filter(w => w > 0.1);
         widths.sort((a, b) => a - b);
-        const medianWidth = widths.length > 0 ? widths[Math.floor(widths.length / 2)] : 1.0;
+        const midIdx = Math.floor(widths.length / 2);
 
-        // ADJUSTMENT FOR MISSING MARKERS:
-        // Lowered multiplier from 1.5 -> 1.35
-        // Lowered floor from 3.5 -> 2.5
-        // This makes it more sensitive to "small" markers.
-        const markerThreshold = Math.max(medianWidth * 1.35, 2.5);
+        let averageThickness = widths.length > 0 ? widths[midIdx] : 1.0;
 
-        // 7. Separation Logic
+        // CAP 1: Force Line Baseline (Lines are thin)
+        if (averageThickness > 3.0) averageThickness = 3.0;
+
+        // CAP 2: Dynamic Threshold
+        let thresholdVal = 1.5;
+        const maxThreshold = averageThickness * 1.5;
+        if (thresholdVal > maxThreshold) thresholdVal = maxThreshold;
+
+        const markerThreshold = averageThickness + thresholdVal;
+
+        // 6. Separation Logic with SPLIT LIMIT
         const finalPoints = [];
         let inMarkerGroup = false;
         let markerGroup = [];
 
-        for (let i = 0; i < smoothedPoints.length; i++) {
-            const p = smoothedPoints[i];
+        for (let i = 0; i < processedPoints.length; i++) {
+            const p = processedPoints[i];
 
             if (p.thickness > markerThreshold) {
-                inMarkerGroup = true;
-                markerGroup.push(p);
+                // Marker Candidate
+                if (!inMarkerGroup) {
+                    inMarkerGroup = true;
+                    markerGroup = [p];
+                } else {
+                    // CHECK SPLIT LOGIC
+                    const startX = markerGroup[0].x;
+                    const currentWidth = p.x - startX;
+
+                    if (currentWidth > splitLimit) {
+                        // Force Split: Save current group, start new one
+                        const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
+                        const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
+                        finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+
+                        markerGroup = [p];
+                    } else {
+                        markerGroup.push(p);
+                    }
+                }
             } else {
+                // Line
                 if (inMarkerGroup) {
-                    // If we have a cluster of wide points, it's a marker
-                    // Reduced min length check to 1 to catch very small markers
-                    if (markerGroup.length >= 1) {
+                    if (markerGroup.length > 0) {
                         const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
                         const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
                         finalPoints.push({ x: avgX, y: avgY, isMarker: true });
@@ -1472,7 +1507,7 @@ class SVGXLineChartRendering {
         }
 
         // Handle end of line
-        if (inMarkerGroup && markerGroup.length >= 1) {
+        if (inMarkerGroup && markerGroup.length > 0) {
             const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
             const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
             finalPoints.push({ x: avgX, y: avgY, isMarker: true });
