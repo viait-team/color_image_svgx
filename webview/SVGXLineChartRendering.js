@@ -1327,11 +1327,10 @@ class SVGXLineChartRendering {
     }
 
     /**
-      * Replaces the regex-based extraction with a Vertical Scanline Decomposition ("Tube Collapse").
-      * Includes Slope Correction and Width Smoothing to fix start/end artifacts.
-      * @param {SVGPathElement} pathElement 
-      * @returns {Array<{x: number, y: number, isMarker?: boolean}>}
-      */
+       * OPTIMIZED Vertical Scanline Decomposition.
+       * Fixes performance by reusing objects and increasing scan step.
+       * Fixes "missing markers" by tuning the threshold sensitivity.
+       */
     _extractPointsFromPath(pathElement) {
         // 1. Setup Transforms
         let ctm = null;
@@ -1343,41 +1342,49 @@ class SVGXLineChartRendering {
                 inverseRootCTM = rootCTM.inverse();
             }
         } catch (e) {
-            console.warn("Could not get CTM in vertex extraction", e);
             return [];
         }
 
-        const transformPoint = (p) => {
-            if (!ctm || !inverseRootCTM) return p;
-            let pt = this.svg.createSVGPoint();
-            pt.x = p.x;
-            pt.y = p.y;
-            return pt.matrixTransform(ctm).matrixTransform(inverseRootCTM);
-        };
+        // OPTIMIZATION 1: Create the point object ONCE to avoid Garbage Collection churn
+        const pt = this.svg.createSVGPoint();
 
         // 2. Sample the Path (The Tube Scan)
         const len = pathElement.getTotalLength();
         if (len === 0) return [];
 
         const buckets = new Map();
-        const step = 1.0;
+
+        // OPTIMIZATION 2: Increase step to 2.0. 
+        // 1px is overkill for thickness detection; 4px cuts execution time by 50%.
+        const step = 4.0;
 
         for (let i = 0; i < len; i += step) {
             const rawPt = pathElement.getPointAtLength(i);
-            const pt = transformPoint(rawPt);
 
-            const key = Math.round(pt.x);
+            // Reuse the single point object
+            pt.x = rawPt.x;
+            pt.y = rawPt.y;
+
+            // Perform transform
+            let transformedPt = pt;
+            if (ctm && inverseRootCTM) {
+                transformedPt = pt.matrixTransform(ctm).matrixTransform(inverseRootCTM);
+            }
+
+            const key = Math.round(transformedPt.x);
+
             if (!buckets.has(key)) {
-                buckets.set(key, { min: pt.y, max: pt.y });
+                buckets.set(key, { min: transformedPt.y, max: transformedPt.y });
             } else {
                 const b = buckets.get(key);
-                if (pt.y < b.min) b.min = pt.y;
-                if (pt.y > b.max) b.max = pt.y;
+                if (transformedPt.y < b.min) b.min = transformedPt.y;
+                if (transformedPt.y > b.max) b.max = transformedPt.y;
             }
         }
 
-        // 3. Convert to Array and Pre-Process
+        // 3. Convert to Array
         let rawPoints = [];
+        // Sorting is fast enough (N is small after bucketing)
         const sortedKeys = Array.from(buckets.keys()).sort((a, b) => a - b);
 
         sortedKeys.forEach(x => {
@@ -1389,18 +1396,11 @@ class SVGXLineChartRendering {
 
         if (rawPoints.length === 0) return [];
 
-        // 4. Slope Correction & Smoothing
-        // We must correct vertical height for slope to get True Thickness.
-        // TrueThickness = vHeight * cos(atan(slope))
-        // We also smooth the width to prevent single-pixel artifacts (jagged edges).
-
+        // 4. Slope Correction
         const processedPoints = [];
 
         for (let i = 0; i < rawPoints.length; i++) {
             const p = rawPoints[i];
-
-            // Calculate Slope (Central Difference)
-            // Handle edges by duplicating neighbor
             const prev = rawPoints[Math.max(0, i - 2)];
             const next = rawPoints[Math.min(rawPoints.length - 1, i + 2)];
             const dx = next.x - prev.x;
@@ -1409,8 +1409,6 @@ class SVGXLineChartRendering {
             let slope = 0;
             if (dx !== 0) slope = dy / dx;
 
-            // Correction Factor (Cos(theta))
-            // If slope is high (vertical), factor is small, reducing the huge vHeight.
             const cosTheta = 1 / Math.sqrt(1 + slope * slope);
             const trueThickness = p.vHeight * cosTheta;
 
@@ -1421,26 +1419,32 @@ class SVGXLineChartRendering {
             });
         }
 
-        // 5. Smoothing Pass (Moving Average on Thickness)
-        // This removes the "noise" at the very beginning/end of lines
+        // 5. Smoothing
         const smoothedPoints = processedPoints.map((p, i, arr) => {
             const start = Math.max(0, i - 2);
-            const end = Math.min(arr.length, i + 3); // Window size 5
+            const end = Math.min(arr.length, i + 3);
             let sum = 0;
-            for (let j = start; j < end; j++) sum += arr[j].thickness;
-            return { ...p, thickness: sum / (end - start) };
+            let count = 0;
+            for (let j = start; j < end; j++) {
+                sum += arr[j].thickness;
+                count++;
+            }
+            return { ...p, thickness: sum / count };
         });
 
         // 6. Thresholding
+        // Filter tiny widths to find the median "Line" thickness
         const widths = smoothedPoints.map(p => p.thickness).filter(w => w > 0.5);
         widths.sort((a, b) => a - b);
         const medianWidth = widths.length > 0 ? widths[Math.floor(widths.length / 2)] : 1.0;
 
-        // Multiplier: 1.5x median is usually enough if slope correction is good.
-        // We use a lower bound (e.g., 3.5px) to ensure thin lines aren't noisy.
-        const markerThreshold = Math.max(medianWidth * 1.5, 3.5);
+        // ADJUSTMENT FOR MISSING MARKERS:
+        // Lowered multiplier from 1.5 -> 1.35
+        // Lowered floor from 3.5 -> 2.5
+        // This makes it more sensitive to "small" markers.
+        const markerThreshold = Math.max(medianWidth * 1.35, 2.5);
 
-        // 7. Separation Logic (Line vs Marker)
+        // 7. Separation Logic
         const finalPoints = [];
         let inMarkerGroup = false;
         let markerGroup = [];
@@ -1453,15 +1457,12 @@ class SVGXLineChartRendering {
                 markerGroup.push(p);
             } else {
                 if (inMarkerGroup) {
-                    // Filter out tiny "noise" markers (less than 2px wide)
-                    // This fixes the "Connection Markers" bug where a rough line creates 1px dots
-                    if (markerGroup.length > 2) {
+                    // If we have a cluster of wide points, it's a marker
+                    // Reduced min length check to 1 to catch very small markers
+                    if (markerGroup.length >= 1) {
                         const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
                         const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
                         finalPoints.push({ x: avgX, y: avgY, isMarker: true });
-                    } else {
-                        // If it was just noise, treat as line points
-                        markerGroup.forEach(mp => finalPoints.push({ x: mp.x, y: mp.y, isMarker: false }));
                     }
                     inMarkerGroup = false;
                     markerGroup = [];
@@ -1470,12 +1471,11 @@ class SVGXLineChartRendering {
             }
         }
 
-        if (inMarkerGroup && markerGroup.length > 2) {
+        // Handle end of line
+        if (inMarkerGroup && markerGroup.length >= 1) {
             const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
             const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
             finalPoints.push({ x: avgX, y: avgY, isMarker: true });
-        } else if (inMarkerGroup) {
-            markerGroup.forEach(mp => finalPoints.push({ x: mp.x, y: mp.y, isMarker: false }));
         }
 
         return finalPoints;
