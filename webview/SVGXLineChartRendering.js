@@ -1327,13 +1327,13 @@ class SVGXLineChartRendering {
     }
 
     /**
-     * Replaces the regex-based extraction with a Vertical Scanline Decomposition ("Tube Collapse").
-     * This separates the trace (centerline) from the markers (wide bulges) within a single Potrace path.
-     * @param {SVGPathElement} pathElement 
-     * @returns {Array<{x: number, y: number, isMarker?: boolean}>}
-     */
+      * Replaces the regex-based extraction with a Vertical Scanline Decomposition ("Tube Collapse").
+      * Includes Slope Correction and Width Smoothing to fix start/end artifacts.
+      * @param {SVGPathElement} pathElement 
+      * @returns {Array<{x: number, y: number, isMarker?: boolean}>}
+      */
     _extractPointsFromPath(pathElement) {
-        // 1. Setup Transforms to get Screen/Global coordinates
+        // 1. Setup Transforms
         let ctm = null;
         let inverseRootCTM = null;
         try {
@@ -1344,7 +1344,7 @@ class SVGXLineChartRendering {
             }
         } catch (e) {
             console.warn("Could not get CTM in vertex extraction", e);
-            return []; // Fail gracefully
+            return [];
         }
 
         const transformPoint = (p) => {
@@ -1359,18 +1359,14 @@ class SVGXLineChartRendering {
         const len = pathElement.getTotalLength();
         if (len === 0) return [];
 
-        const buckets = new Map(); // X (int) -> {minY, maxY}
-
-        // Sampling Step: 1.0 pixel provides good resolution without over-scanning
+        const buckets = new Map();
         const step = 1.0;
 
         for (let i = 0; i < len; i += step) {
             const rawPt = pathElement.getPointAtLength(i);
             const pt = transformPoint(rawPt);
 
-            // Bucket by integer X to find vertical bounds (Top/Bottom of the tube)
             const key = Math.round(pt.x);
-
             if (!buckets.has(key)) {
                 buckets.set(key, { min: pt.y, max: pt.y });
             } else {
@@ -1380,74 +1376,106 @@ class SVGXLineChartRendering {
             }
         }
 
-        // 3. Process Buckets: Compute Centerline and Thickness
-        const samplePoints = [];
-        const widths = [];
-
-        // Sort keys to scan left-to-right
+        // 3. Convert to Array and Pre-Process
+        let rawPoints = [];
         const sortedKeys = Array.from(buckets.keys()).sort((a, b) => a - b);
 
         sortedKeys.forEach(x => {
             const b = buckets.get(x);
-            const width = Math.abs(b.max - b.min);
+            const vHeight = Math.abs(b.max - b.min);
             const midY = (b.min + b.max) / 2;
-
-            // Only consider points with some thickness (avoids artifacts)
-            samplePoints.push({ x: x, y: midY, width: width });
-
-            // Collect widths to determine baseline stroke width
-            // Ignore very thin widths (start/end points) and very wide (markers) for now
-            if (width > 0.5) widths.push(width);
+            rawPoints.push({ x: x, y: midY, vHeight: vHeight });
         });
 
-        if (samplePoints.length === 0) return [];
+        if (rawPoints.length === 0) return [];
 
-        // 4. Calculate Median Width (The "Trace Thickness")
+        // 4. Slope Correction & Smoothing
+        // We must correct vertical height for slope to get True Thickness.
+        // TrueThickness = vHeight * cos(atan(slope))
+        // We also smooth the width to prevent single-pixel artifacts (jagged edges).
+
+        const processedPoints = [];
+
+        for (let i = 0; i < rawPoints.length; i++) {
+            const p = rawPoints[i];
+
+            // Calculate Slope (Central Difference)
+            // Handle edges by duplicating neighbor
+            const prev = rawPoints[Math.max(0, i - 2)];
+            const next = rawPoints[Math.min(rawPoints.length - 1, i + 2)];
+            const dx = next.x - prev.x;
+            const dy = next.y - prev.y;
+
+            let slope = 0;
+            if (dx !== 0) slope = dy / dx;
+
+            // Correction Factor (Cos(theta))
+            // If slope is high (vertical), factor is small, reducing the huge vHeight.
+            const cosTheta = 1 / Math.sqrt(1 + slope * slope);
+            const trueThickness = p.vHeight * cosTheta;
+
+            processedPoints.push({
+                x: p.x,
+                y: p.y,
+                thickness: trueThickness
+            });
+        }
+
+        // 5. Smoothing Pass (Moving Average on Thickness)
+        // This removes the "noise" at the very beginning/end of lines
+        const smoothedPoints = processedPoints.map((p, i, arr) => {
+            const start = Math.max(0, i - 2);
+            const end = Math.min(arr.length, i + 3); // Window size 5
+            let sum = 0;
+            for (let j = start; j < end; j++) sum += arr[j].thickness;
+            return { ...p, thickness: sum / (end - start) };
+        });
+
+        // 6. Thresholding
+        const widths = smoothedPoints.map(p => p.thickness).filter(w => w > 0.5);
         widths.sort((a, b) => a - b);
         const medianWidth = widths.length > 0 ? widths[Math.floor(widths.length / 2)] : 1.0;
 
-        // Threshold: If thickness > median * X, it's a marker bulge.
-        // Heuristic: Markers are usually significantly wider than the line trace.
-        const markerThreshold = Math.max(medianWidth * 1.6, 3.5);
+        // Multiplier: 1.5x median is usually enough if slope correction is good.
+        // We use a lower bound (e.g., 3.5px) to ensure thin lines aren't noisy.
+        const markerThreshold = Math.max(medianWidth * 1.5, 3.5);
 
-        // 5. Separate and Reconstruct
-        // Strategy: Collapse Trace to centerline points. Collapse Marker clusters to a single centroid point.
+        // 7. Separation Logic (Line vs Marker)
         const finalPoints = [];
         let inMarkerGroup = false;
         let markerGroup = [];
 
-        for (let i = 0; i < samplePoints.length; i++) {
-            const p = samplePoints[i];
+        for (let i = 0; i < smoothedPoints.length; i++) {
+            const p = smoothedPoints[i];
 
-            if (p.width > markerThreshold) {
-                // This X slice is part of a "bulge" (marker)
+            if (p.thickness > markerThreshold) {
                 inMarkerGroup = true;
                 markerGroup.push(p);
             } else {
-                // If we were collecting a marker group, finalize it now
                 if (inMarkerGroup) {
-                    // Calculate centroid of the marker group
-                    const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
-                    const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
-
-                    // Add the Marker Centroid as a specialized data point
-                    // This allows later logic to render it as a dot if desired
-                    finalPoints.push({ x: avgX, y: avgY, isMarker: true });
-
+                    // Filter out tiny "noise" markers (less than 2px wide)
+                    // This fixes the "Connection Markers" bug where a rough line creates 1px dots
+                    if (markerGroup.length > 2) {
+                        const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
+                        const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
+                        finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+                    } else {
+                        // If it was just noise, treat as line points
+                        markerGroup.forEach(mp => finalPoints.push({ x: mp.x, y: mp.y, isMarker: false }));
+                    }
                     inMarkerGroup = false;
                     markerGroup = [];
                 }
-
-                // Add the regular Trace point (Centerline)
                 finalPoints.push({ x: p.x, y: p.y, isMarker: false });
             }
         }
 
-        // Flush any trailing marker group at the end of the path
-        if (inMarkerGroup) {
+        if (inMarkerGroup && markerGroup.length > 2) {
             const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
             const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
             finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+        } else if (inMarkerGroup) {
+            markerGroup.forEach(mp => finalPoints.push({ x: mp.x, y: mp.y, isMarker: false }));
         }
 
         return finalPoints;
