@@ -33,64 +33,81 @@ class SVGXLineChartRendering {
                 return;
             }
 
-            // 1. Method 1: Find gridlines
-            console.log("[LOG] Method 1: Finding Y-axis grid lines (> 70% width)...");
-            let gridLines = this._findYAxisGridlines(svgWidth, svgHeight, 0.70);
-            let yPairs = this._matchYAxisLeftLabels(gridLines, leftLabels);
 
-            // 2. If Method 1 failed, try Method 2: left ticks
+
+            // 1. Find Y gridlines (Method 1) and try matching
+            console.log("[LOG] Method 1: Finding Y-axis grid lines (> 70% width)...");
+            let yGridLines = this._findYAxisGridlines(svgWidth, svgHeight, 0.70);
+            console.log(`[LOG] Found ${yGridLines.length} Y gridlines`);
+            let yPairs = this._matchYAxisLeftLabels(yGridLines, leftLabels);
+
+            // 2. If Method 1 matching failed, try Method 2: left ticks
             if (yPairs.length < 2) {
-                console.log("[LOG] Method 1 failed. Trying Method 2: left ticks...");
-                const leftTicks = this._findYAxisLeftTicks(svgWidth, svgHeight);
-                yPairs = this._matchYAxisLeftLabels(leftTicks, leftLabels);
+                console.log("[LOG] Y-axis Method 1 matching failed. Trying Method 2: left ticks...");
+                const yTicks = this._findYAxisLeftTicks(svgWidth, svgHeight);
+                console.log(`[LOG] Found ${yTicks.length} Y ticks`);
+                yPairs = this._matchYAxisLeftLabels(yTicks, leftLabels);
+                if (yPairs.length >= 2) {
+                    yGridLines = yTicks; // Use ticks for chart area
+                }
             }
 
-            // 3. Y-axis Final Result
+            // 3. Find X gridlines/ticks
+            console.log("[LOG] X-Axis Method 1: Finding vertical grid lines (> 70% height)...");
+            let xGridLines = this._findXAxisGridlines(svgWidth, svgHeight, 0.70);
+            console.log(`[LOG] Found ${xGridLines.length} X gridlines`);
+            if (xGridLines.length < 2) {
+                console.log("[LOG] X-Axis Method 1 failed. Trying Method 2: bottom ticks...");
+                xGridLines = this._findXAxisBottomTicks(svgWidth, svgHeight);
+                console.log(`[LOG] Found ${xGridLines.length} X ticks`);
+            }
+
+            // 4. LOG CHART AREA from matched Y gridlines/ticks and X gridlines/ticks
+            if (xGridLines.length >= 2 && yGridLines.length >= 2) {
+                const allXVisuals = xGridLines.map(g => g.x);
+                const allYVisuals = yGridLines.map(g => g.y);
+                const chartLeft = Math.min(...allXVisuals);
+                const chartRight = Math.max(...allXVisuals);
+                const chartTop = Math.min(...allYVisuals);
+                const chartBottom = Math.max(...allYVisuals);
+                console.log(`[LOG] Chart area: left=${chartLeft.toFixed(1)}, top=${chartTop.toFixed(1)}, right=${chartRight.toFixed(1)}, bottom=${chartBottom.toFixed(1)}`);
+            }
+
+            // 5. Y-axis Final Result
             if (yPairs.length < 2) {
                 console.warn("[WARN] Could not find 2 valid Y-axis pairs.");
             } else {
-                // Sort by LOGICAL value (min to max)
                 yPairs.sort((a, b) => a.logical - b.logical);
-
                 const y1 = yPairs[0];
                 const y2 = yPairs[yPairs.length - 1];
-
                 const ylm_string = `[${y1.logical.toFixed(2)}, ${y2.logical.toFixed(2)}, ${y1.visual.toFixed(2)}, ${y2.visual.toFixed(2)}]`;
                 this.svg.setAttribute("ylm", ylm_string);
-                // this._highlightMatches(yPairs, 'red');
                 console.log(`[LOG] Final result: ylm=${ylm_string}`);
             }
 
             // ==================================================================
-            // X-AXIS LOGICAL MAPPING
+            // X-AXIS LOGICAL MAPPING (matching step)
             // ==================================================================
 
             console.log("[LOG] Finding bottom axis labels...");
             const bottomLabels = this._findXAxisBottomLabels(svgHeight);
+            let xPairs = [];
             if (bottomLabels.length < 2) {
                 console.warn("[WARN] Not enough bottom labels found.");
             } else {
-                console.log("[LOG] X-Axis Method 1: Finding vertical grid lines (> 70% height)...");
-                let xGridLines = this._findXAxisGridlines(svgWidth, svgHeight, 0.70);
-                let xPairs = this._matchXAxisBottomLabels(xGridLines, bottomLabels);
+                xPairs = this._matchXAxisBottomLabels(xGridLines, bottomLabels);
+            }
 
-                if (xPairs.length < 2) {
-                    console.log("[LOG] X-Axis Method 1 failed. Trying Method 2: bottom ticks...");
-                    const bottomTicks = this._findXAxisBottomTicks(svgWidth, svgHeight);
-                    xPairs = this._matchXAxisBottomLabels(bottomTicks, bottomLabels);
-                }
-
-                if (xPairs.length < 2) {
-                    console.warn("[WARN] Could not find 2 valid X-axis pairs.");
-                } else {
-                    xPairs.sort((a, b) => a.logical - b.logical);
-                    const x1 = xPairs[0];
-                    const x2 = xPairs[xPairs.length - 1];
-                    const xlm_string = `[${x1.logical.toFixed(2)}, ${x2.logical.toFixed(2)}, ${x1.visual.toFixed(2)}, ${x2.visual.toFixed(2)}]`;
-                    this.svg.setAttribute("xlm", xlm_string);
-                    // this._highlightMatches(xPairs, 'orange');
-                    console.log(`[LOG] Final result: xlm=${xlm_string}`);
-                }
+            if (xPairs.length < 2) {
+                console.warn("[WARN] Could not find 2 valid X-axis pairs.");
+            } else {
+                xPairs.sort((a, b) => a.logical - b.logical);
+                const x1 = xPairs[0];
+                const x2 = xPairs[xPairs.length - 1];
+                const xlm_string = `[${x1.logical.toFixed(2)}, ${x2.logical.toFixed(2)}, ${x1.visual.toFixed(2)}, ${x2.visual.toFixed(2)}]`;
+                this.svg.setAttribute("xlm", xlm_string);
+                // this._highlightMatches(xPairs, 'orange');
+                console.log(`[LOG] Final result: xlm=${xlm_string}`);
             }
 
         } catch (error) {
@@ -408,6 +425,10 @@ class SVGXLineChartRendering {
             }
 
             console.log(`[LOG] Found ${dataLines.length} potential data lines`);
+
+            // MARKER DETECTION: Scan all candidate paths and mark small ones as markers
+            this._detectMarkers(dataLines);
+
             this._associateLinesWithLegend(dataLines, legendItems);
         } catch (error) {
             console.error("[ERROR] Failed to add legend info:", error);
@@ -544,6 +565,10 @@ class SVGXLineChartRendering {
             let color = '#000000';
             if (bestSymbol) {
                 color = this._extractPathColor(bestSymbol);
+                // Debug: Log the legend symbol details
+                const fill = bestSymbol.getAttribute('fill');
+                const stroke = bestSymbol.getAttribute('stroke');
+                console.log(`[DEBUG] Legend "${textItem.text}": symbol fill="${fill}", stroke="${stroke}", extracted="${color}"`);
             }
 
             const legendId = this._generateLegendId(textItem.text);
@@ -623,6 +648,33 @@ class SVGXLineChartRendering {
             colorCounts[c] = (colorCounts[c] || 0) + 1;
         });
         return dataLines;
+    }
+
+    /**
+     * Detects small paths that are markers (not lines) based on bounding box size.
+     * Adds an 'isMarker' property to each data line object.
+     * @param {Array} dataLines - Array of {element, box, color} objects
+     */
+    _detectMarkers(dataLines) {
+        const MARKER_THRESHOLD = 15; // Max dimension in pixels to be considered a marker
+        let markerCount = 0;
+
+        dataLines.forEach(line => {
+            const box = line.box;
+            const minDim = Math.min(box.width, box.height);
+            const maxDim = Math.max(box.width, box.height);
+            // Marker: min dimension > 4px AND max dimension < 15px
+            if (box && minDim > 4 && maxDim < MARKER_THRESHOLD) {
+                line.isMarker = true;
+                line.element.setAttribute('lc_is_marker', 'true');
+                markerCount++;
+                console.log(`[LOG] Marker detected: pos=(${box.cx.toFixed(1)}, ${box.cy.toFixed(1)}), bbox=${box.width.toFixed(1)}x${box.height.toFixed(1)}, color=${line.color}`);
+            } else {
+                line.isMarker = false;
+            }
+        });
+
+        console.log(`[LOG] Marker detection complete: ${markerCount} markers found out of ${dataLines.length} paths`);
     }
 
     _associateLinesWithLegend(dataLines, legendItems) {
@@ -1013,30 +1065,14 @@ class SVGXLineChartRendering {
                 // We'll perform a lightweight dedup.
                 const cleanPoints = this._removeDuplicatePoints(logicalPoints, 0.000001);
 
-                // 3. Determine Trace Type (Line vs Marker/Dot)
-                // If it has very few points and covers a tiny area, it's a Dot.
-                let isDot = false;
-                if (cleanPoints.length < 3) {
-                    // Very few points -> likely a dot or short segment
-                    // Check bounding box size in logical units might be tricky if scales vary.
-                    // But usually "dots off the line" are distinct.
-                    // Potrace dots usually have 4+ points (rect) or more (circle appx).
-                }
-
-                // Heuristic: If max visual dimension of the path < 10px, treat as Dot/Marker
-                // We need visual bbox for this.
-                let visualBox = null;
-                try { visualBox = path.getBBox(); } catch (e) { }
-
-                if (visualBox && Math.max(visualBox.width, visualBox.height) < 8) {
-                    isDot = true;
-                }
+                // Check if this path was marked as a marker during the detection phase
+                const isMarker = path.hasAttribute('lc_is_marker') && path.getAttribute('lc_is_marker') === 'true';
 
                 seriesTraces.push({
                     points: cleanPoints,
                     style: this._extractTraceStyle(path), // Specific style for this trace
-                    isDot: isDot,
-                    centroid: isDot ? this._computeCentroid(cleanPoints) : null
+                    isMarker: isMarker,
+                    centroid: isMarker ? this._computeCentroid(cleanPoints) : null
                 });
 
                 allLogicalPoints.push(...cleanPoints);
@@ -1733,8 +1769,8 @@ class SVGXLineChartRendering {
                 // trace.style might be black/null if the path attribute was missing or complex
                 const seriesColor = series.style.stroke !== 'none' ? series.style.stroke : '#000000';
 
-                // If trace is a "Dot" (marker) OR has only 1 point: Draw Circle
-                if (trace.isDot || trace.points.length < 2) {
+                // If trace is a Marker OR has only 1 point: Draw Circle
+                if (trace.isMarker || trace.points.length < 2) {
                     const pt = trace.centroid || trace.points[0];
                     if (pt) {
                         chartGroup.append("circle")
