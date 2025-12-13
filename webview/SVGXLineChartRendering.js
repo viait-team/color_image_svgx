@@ -930,11 +930,11 @@ class SVGXLineChartRendering {
 
     /**
      * Extracts logical data for each trace/legend item using xlm and ylm mappings.
-     * Uses path sampling for accurate coordinate extraction from curves.
-     * @returns {Array} Array of series objects with id, name, type, style, and data points
+     * Preserves individual path topology (main line vs. isolated markers/segments).
+     * @returns {Array} Array of series objects with id, name, type, style, traces, and combined data points
      */
     extractLogicalData() {
-        console.log("[LOG] SVGXLineChartRendering: Extracting logical data...");
+        console.log("[LOG] SVGXLineChartRendering: Extracting logical data (Trace-Based)...");
 
         const xlmAttr = this.svg.getAttribute('xlm');
         const ylmAttr = this.svg.getAttribute('ylm');
@@ -987,62 +987,268 @@ class SVGXLineChartRendering {
 
             console.log(`[LOG] Processing series: ${seriesName} (${associatedPaths.length} paths)`);
 
-            // Extract style from the first path
-            const style = this._extractTraceStyle(associatedPaths[0]);
+            // Extract style from the first path (as a baseline)
+            const baseStyle = this._extractTraceStyle(associatedPaths[0]);
 
-            // Collect all points from all associated paths
-            const allVisualPoints = [];
+            const seriesTraces = [];
+            const allLogicalPoints = [];
 
             associatedPaths.forEach(path => {
                 const points = this._extractPointsFromPath(path);
-                allVisualPoints.push(...points);
-            });
+                if (points.length === 0) return;
 
-            // Debug: show visual coordinate range
-            if (allVisualPoints.length > 0) {
-                const visXs = allVisualPoints.map(p => p.x);
-                const visYs = allVisualPoints.map(p => p.y);
-                console.log(`[DEBUG] Series "${seriesName}" visual X range: [${Math.min(...visXs).toFixed(1)}, ${Math.max(...visXs).toFixed(1)}]`);
-                console.log(`[DEBUG] Series "${seriesName}" visual Y range: [${Math.min(...visYs).toFixed(1)}, ${Math.max(...visYs).toFixed(1)}]`);
-                console.log(`[DEBUG] Y mapping: logical=[${yMapping[0]}, ${yMapping[1]}], visual=[${yMapping[2]}, ${yMapping[3]}]`);
-            }
-
-            const logicalData = allVisualPoints.map(pt => {
+                // 1. Map points to Logical Coordinates
                 // toLogicalX: dx_min + (vx - vx_min) * (dx_max - dx_min) / (vx_max - vx_min)
-                // Use explicit pairing: xMapping[0] maps to xMapping[2]
-                const logicalX = this._toLogicalX(pt.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
-
                 // toLogicalY: dy_min + (vy - vy_min) * (dy_max - dy_min) / (vy_max - vy_min)
-                // Use explicit pairing: yMapping[0] maps to yMapping[2]
-                // Do NOT swap visual min/max - rely on strict 0->2, 1->3 pairing
-                const logicalY = this._toLogicalY(pt.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
-                return { x: logicalX, y: logicalY };
+                const logicalPoints = points.map(pt => {
+                    return {
+                        x: this._toLogicalX(pt.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]),
+                        y: this._toLogicalY(pt.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3])
+                    };
+                });
+
+                // 2. Simplify/Clean points slightly to remove potrace micro-noise?
+                // For now, let's keep raw resolution to preserve curve fidelity, 
+                // but if points are indentical, d3 might complain? No, it's fine.
+                // We'll perform a lightweight dedup.
+                const cleanPoints = this._removeDuplicatePoints(logicalPoints, 0.000001);
+
+                // 3. Determine Trace Type (Line vs Marker/Dot)
+                // If it has very few points and covers a tiny area, it's a Dot.
+                let isDot = false;
+                if (cleanPoints.length < 3) {
+                    // Very few points -> likely a dot or short segment
+                    // Check bounding box size in logical units might be tricky if scales vary.
+                    // But usually "dots off the line" are distinct.
+                    // Potrace dots usually have 4+ points (rect) or more (circle appx).
+                }
+
+                // Heuristic: If max visual dimension of the path < 10px, treat as Dot/Marker
+                // We need visual bbox for this.
+                let visualBox = null;
+                try { visualBox = path.getBBox(); } catch (e) { }
+
+                if (visualBox && Math.max(visualBox.width, visualBox.height) < 8) {
+                    isDot = true;
+                }
+
+                seriesTraces.push({
+                    points: cleanPoints,
+                    style: this._extractTraceStyle(path), // Specific style for this trace
+                    isDot: isDot,
+                    centroid: isDot ? this._computeCentroid(cleanPoints) : null
+                });
+
+                allLogicalPoints.push(...cleanPoints);
             });
 
-            // Sort by X for line charts (avoid zigzag lines)
-            logicalData.sort((a, b) => a.x - b.x);
-
-            // Remove duplicate points (within tolerance)
-            const uniqueData = this._removeDuplicatePoints(logicalData, 0.001);
+            // Override baseStyle stroke with legend color to ensure consistency with Legend Symbol
+            if (legendItem.color) {
+                baseStyle.stroke = legendItem.color;
+            }
 
             extractedSeries.push({
                 id: seriesId,
                 name: seriesName,
                 type: seriesType,
-                style: style,
-                data: uniqueData
+                style: baseStyle,
+                traces: seriesTraces,
+                data: allLogicalPoints // Flattened list for Axis Extents
             });
 
-            console.log(`[LOG] Series "${seriesName}": ${uniqueData.length} unique points extracted`);
-            if (uniqueData.length > 0) {
-                console.log(`[LOG]   First point: (${uniqueData[0].x.toFixed(2)}, ${uniqueData[0].y.toFixed(2)})`);
-                console.log(`[LOG]   Last point: (${uniqueData[uniqueData.length - 1].x.toFixed(2)}, ${uniqueData[uniqueData.length - 1].y.toFixed(2)})`);
-            }
+            console.log(`[LOG] Series "${seriesName}": ${seriesTraces.length} traces extracted.`);
         });
 
         console.log(`[LOG] Extracted ${extractedSeries.length} series total.`);
-        console.log("[LOG] Chart data:", JSON.stringify(extractedSeries.map(s => ({ id: s.id, name: s.name, type: s.type, points: s.data.length })), null, 2));
-        return extractedSeries;
+
+        // --- Correct Axis Range Calculation ---
+        // 1. Determine Visual Chart Bounds (Plot Area)
+        // We can infer this from the min/max coordinates of the data points we found,
+        // OR better, from the gridlines if we can find them again.
+        // Let's use the extent of the extracted data points + finding the main axis lines.
+
+        // Helper to find range from Ticks (primary) or Gridlines (secondary)
+        const findAxisDomains = () => {
+            const svgBox = this.svg.viewBox.baseVal;
+            const svgWidth = svgBox.width || 800;
+            const svgHeight = svgBox.height || 600;
+
+            // 1. Get X-Axis Ticks (Bottom Labels)
+            // We can reuse the filter logic from _findXAxisBottomLabels but we need the VISUAL min/max
+            const xLabels = this._findXAxisBottomLabels(svgHeight);
+
+            let xDom = null;
+            if (xLabels && xLabels.length >= 2) {
+                // Sort by X position
+                xLabels.sort((a, b) => a.x - b.x);
+                const firstTick = xLabels[0];
+                const lastTick = xLabels[xLabels.length - 1];
+
+                // Map visual X -> Logical X
+                const l1 = this._toLogicalX(firstTick.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+                const l2 = this._toLogicalX(lastTick.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+                xDom = [Math.min(l1, l2), Math.max(l1, l2)];
+                console.log(`[LOG] Found X-Axis Ticks: First=[x:${firstTick.x.toFixed(1)}, val:${firstTick.value}], Last=[x:${lastTick.x.toFixed(1)}, val:${lastTick.value}] -> Dom: ${xDom}`);
+            } else {
+                // Fallback: Gridlines
+                console.log("[LOG] No X-Ticks found, checking gridlines...");
+                const xGrid = this._findXAxisGridlines(svgWidth, svgHeight, 0.4); // 40% height min
+                if (xGrid && xGrid.length >= 2) {
+                    const minX = Math.min(...xGrid.map(g => g.x));
+                    const maxX = Math.max(...xGrid.map(g => g.x));
+                    const l1 = this._toLogicalX(minX, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+                    const l2 = this._toLogicalX(maxX, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+                    xDom = [Math.min(l1, l2), Math.max(l1, l2)];
+                }
+            }
+
+            // 2. Get Y-Axis Ticks (Left Labels)
+            const yLabels = this._findYAxisLeftLabels(svgWidth);
+
+            let yDom = null;
+            if (yLabels && yLabels.length >= 2) {
+                yLabels.sort((a, b) => a.y - b.y); // Top to Bottom
+                const firstTick = yLabels[0]; // Topmost (lowest visual Y, highest Logical usually)
+                const lastTick = yLabels[yLabels.length - 1]; // Bottommost
+
+                const l1 = this._toLogicalY(firstTick.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
+                const l2 = this._toLogicalY(lastTick.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
+                yDom = [Math.min(l1, l2), Math.max(l1, l2)];
+                console.log(`[LOG] Found Y-Axis Ticks: Top=[y:${firstTick.y.toFixed(1)}, val:${firstTick.value}], Bottom=[y:${lastTick.y.toFixed(1)}, val:${lastTick.value}] -> Dom: ${yDom}`);
+            } else {
+                // Fallback: Use Mapping anchors themselves if no ticks found?
+                // Let's just use the tick locations from the MAPPING as the range.
+                const l1 = yMapping[0];
+                const l2 = yMapping[1];
+                yDom = [Math.min(l1, l2), Math.max(l1, l2)];
+            }
+
+            // Final Safety Check
+            if (!xDom) {
+                // Fallback to the mapping's own ticks range
+                xDom = [Math.min(xMapping[0], xMapping[1]), Math.max(xMapping[0], xMapping[1])];
+            }
+
+
+
+
+
+            // Calculate Tick Counts
+            const xCount = xLabels ? xLabels.length : (xGrid ? xGrid.length : 0);
+            const yCount = yLabels ? yLabels.length : 0;
+
+            return {
+                x: xDom,
+                y: yDom,
+                xTickCount: xCount,
+                yTickCount: yCount,
+                // Return Visual Bounds for Label Detection
+                visualX: xLabels && xLabels.length >= 2
+                    ? [Math.min(xLabels[0].x, xLabels[xLabels.length - 1].x), Math.max(xLabels[0].x, xLabels[xLabels.length - 1].x)]
+                    : (xGrid && xGrid.length >= 2 ? [Math.min(...xGrid.map(g => g.x)), Math.max(...xGrid.map(g => g.x))] : null),
+                visualY: yLabels && yLabels.length >= 2
+                    ? [Math.min(yLabels[0].y, yLabels[yLabels.length - 1].y), Math.max(yLabels[0].y, yLabels[yLabels.length - 1].y)]
+                    : null
+            };
+        };
+
+        const domains = findAxisDomains();
+
+        const axes = {
+            x: {
+                domain: domains.x,
+                label: this._findAxisTitle('x', domains.visualX, domains.visualY),
+                tickCount: domains.xTickCount
+            },
+            y: {
+                domain: domains.y,
+                label: this._findAxisTitle('y', domains.visualX, domains.visualY),
+                tickCount: domains.yTickCount
+            }
+        };
+
+        // Requested Console Logs
+        console.log("X info:", JSON.stringify(axes.x));
+        console.log("Y info:", JSON.stringify(axes.y));
+
+        return { series: extractedSeries, axes: axes };
+    }
+
+    _intersectsLegend(bbox) {
+        if (!this.legendItems) return false;
+        // Simple check if bbox overlaps with the legend detect area (if we stored it)
+        // For now, assume false or check against a known legend box if we had one.
+        return false;
+    }
+
+
+
+    /**
+     * Heuristically finds the axis title.
+     * Updated to look relative to the chart area.
+     * @param {string} axis - 'x' or 'y'
+     * @param {Array} xRange - [min, max] visual X of chart
+     * @param {Array} yRange - [min, max] visual Y of chart
+     * @returns {string} The text content of the found title or empty string.
+     */
+    _findAxisTitle(axis, xRange, yRange) {
+        const texts = Array.from(this.svg.querySelectorAll('text'));
+
+        // Default to viewbox if ranges undefined
+        const vb = this.svg.viewBox.baseVal;
+        const minX = xRange ? xRange[0] : 0;
+        const maxX = xRange ? xRange[1] : vb.width;
+        const minY = yRange ? yRange[0] : 0;
+        const maxY = yRange ? yRange[1] : vb.height;
+
+        let candidate = "";
+        let maxScore = 0;
+
+        texts.forEach(t => {
+            const text = t.textContent.trim();
+            if (!text || !isNaN(parseFloat(text.replace(/[$,%]/g, '')))) return;
+            if (this.legendItems && this.legendItems.some(item => item.text === text)) return;
+
+            const bbox = this._getFullBBox(t);
+            if (!bbox) return;
+
+            let score = 0;
+
+            if (axis === 'x') {
+                // X-Axis Title: Below the chart bottom (maxY), centered horizontally
+                if (bbox.y > maxY - 10 && bbox.y < maxY + 100) score += 10;
+                // Centered within the chart width?
+                const chartCenter = minX + (maxX - minX) / 2;
+                const dist = Math.abs(bbox.cx - chartCenter);
+                if (dist < (maxX - minX) * 0.2) score += 5;
+            } else {
+                // Y-Axis Title: To the left of chart left (minX), vertically centered
+                if (bbox.x < minX + 10) score += 10;
+                // Centered val
+                const chartCenterY = minY + (maxY - minY) / 2;
+                const distY = Math.abs(bbox.cy - chartCenterY);
+                if (distY < (maxY - minY) * 0.3) score += 5;
+
+                const transform = t.getAttribute('transform');
+                if (transform && transform.includes('rotate')) score += 5;
+            }
+
+            if (score > 8) {
+                if (score > maxScore) {
+                    maxScore = score;
+                    candidate = text;
+                }
+            }
+        });
+
+        return candidate;
+    }
+
+    _computeCentroid(points) {
+        if (!points || points.length === 0) return { x: 0, y: 0 };
+        let sx = 0, sy = 0;
+        points.forEach(p => { sx += p.x; sy += p.y; });
+        return { x: sx / points.length, y: sy / points.length };
     }
 
     /**
@@ -1068,67 +1274,204 @@ class SVGXLineChartRendering {
     }
 
     /**
-     * Extracts points from a path element with robust coordinate transformation.
-     * Uses getScreenCTM() to map local points to Screen space, then maps back 
-     * to Root SVG User space using the root's inverted ScreenCTM.
-     * This guarantees consistency with validator.js and _getFullBBox logic.
+     * Extracts points from a path element by parsing its 'd' attribute (Vertex Extraction).
+     * This ensures strict adherence to the defined data points (anchors) rather than sampling.
      * @param {SVGPathElement} pathElement 
      * @returns {Array<{x: number, y: number}>}
      */
     _extractPointsFromPath(pathElement) {
         const points = [];
+        const d = pathElement.getAttribute('d');
+        if (!d) return points;
 
+        // Get Screen CTM for coordinate normalization
+        let ctm = null;
+        let inverseRootCTM = null;
         try {
-            const totalLength = pathElement.getTotalLength();
-            if (totalLength === 0) return points;
-
-            // Prepare transformation matrices
-            // 1. Path Local -> Screen
-            const pathCTM = pathElement.getScreenCTM();
-            // 2. Screen -> Root SVG User Space
+            ctm = pathElement.getScreenCTM();
             const rootCTM = this.svg.getScreenCTM();
-
-            if (!pathCTM || !rootCTM) {
-                console.warn("[WARN] Could not get Screen CTM. Falling back to simple sampling.");
-                // Fallback (simple sampling without transform or just local)
-                // If we can't get CTM, we likely can't normalize coordinates correctly.
-                return [];
-            }
-
-            const inverseRootCTM = rootCTM.inverse();
-
-            // Sample points
-            // Use a fixed step size (e.g. 10px) to smooth out potrace noise
-            const stepSize = 10;
-            const numSamples = Math.ceil(totalLength / stepSize);
-
-            // Re-use a single point object for matrix transformations to reduce garbage
-            let pt = this.svg.createSVGPoint();
-
-            for (let i = 0; i <= numSamples; i++) {
-                const length = (i / numSamples) * totalLength;
-                const localPoint = pathElement.getPointAtLength(length);
-
-                // Set point coords
-                pt.x = localPoint.x;
-                pt.y = localPoint.y;
-
-                // 1. Transform to Screen Space
-                const screenPt = pt.matrixTransform(pathCTM);
-
-                // 2. Transform to Root SVG Space
-                const rootPt = screenPt.matrixTransform(inverseRootCTM);
-
-                points.push({ x: rootPt.x, y: rootPt.y });
+            if (rootCTM) {
+                inverseRootCTM = rootCTM.inverse();
             }
         } catch (e) {
-            console.warn("[WARN] Failed to sample path:", e);
-            try {
-                // Final Fallback: BBox center
-                const bbox = pathElement.getBBox();
-                points.push({ x: bbox.x + bbox.width / 2, y: bbox.y + bbox.height / 2 });
-            } catch (e2) {
-                // Ignore
+            console.warn("Could not get CTM in vertex extraction", e);
+        }
+
+        // Helper to transform point: Path Local -> Screen -> Root SVG
+        const transformPoint = (x, y) => {
+            if (!ctm || !inverseRootCTM) return { x, y }; // Fallback to raw coords
+            const pt = this.svg.createSVGPoint();
+            pt.x = x;
+            pt.y = y;
+            const screenPt = pt.matrixTransform(ctm);
+            return screenPt.matrixTransform(inverseRootCTM);
+        };
+
+        // --- SVG Path Parsing Logic ---
+        // Regex to tokenize: Command letters or numbers
+        const tokens = d.match(/([a-zA-Z])|([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g);
+        if (!tokens) return points;
+
+        let cursorX = 0;
+        let cursorY = 0;
+        let startX = 0;
+        let startY = 0;
+
+        let currentCommand = 'M'; // Default first command is usually Moveto
+
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i];
+
+            if (/^[a-zA-Z]$/.test(token)) {
+                currentCommand = token;
+                continue;
+            }
+
+            const getNums = (count) => {
+                const nums = [];
+                for (let j = 0; j < count; j++) {
+                    if (i + j >= tokens.length) break;
+                    const val = parseFloat(tokens[i + j]);
+                    if (isNaN(val)) break;
+                    nums.push(val);
+                }
+                return nums;
+            };
+
+            let consumed = 0;
+            let targetX = cursorX;
+            let targetY = cursorY;
+            let isPoint = false;
+
+            const lowerCmd = currentCommand.toLowerCase();
+            const isRelative = (currentCommand === lowerCmd);
+
+            switch (lowerCmd) {
+                case 'm': // MoveTo (x y)+
+                case 'l': // LineTo (x y)+
+                case 't': // Smooth Quad (x y)+
+                    {
+                        const args = getNums(2);
+                        if (args.length === 2) {
+                            consumed = 2;
+                            let x = args[0];
+                            let y = args[1];
+                            if (isRelative) {
+                                x += cursorX;
+                                y += cursorY;
+                            }
+                            targetX = x;
+                            targetY = y;
+
+                            if (lowerCmd === 'm') {
+                                startX = targetX;
+                                startY = targetY;
+                                isPoint = true; // M is a point (start of subpath)
+                            } else {
+                                isPoint = true;
+                            }
+                        }
+                        break;
+                    }
+                case 'h': // Horizontal LineTo (x)+
+                    {
+                        const args = getNums(1);
+                        if (args.length === 1) {
+                            consumed = 1;
+                            let x = args[0];
+                            if (isRelative) x += cursorX;
+                            targetX = x;
+                            isPoint = true;
+                        }
+                        break;
+                    }
+                case 'v': // Vertical LineTo (y)+
+                    {
+                        const args = getNums(1);
+                        if (args.length === 1) {
+                            consumed = 1;
+                            let y = args[0];
+                            if (isRelative) y += cursorY;
+                            targetY = y;
+                            isPoint = true;
+                        }
+                        break;
+                    }
+                case 'c': // Cubic Bezier (x1 y1 x2 y2 x y)+
+                    {
+                        const args = getNums(6);
+                        if (args.length === 6) {
+                            consumed = 6;
+                            let x = args[4];
+                            let y = args[5];
+                            if (isRelative) {
+                                x += cursorX;
+                                y += cursorY;
+                            }
+                            targetX = x;
+                            targetY = y;
+                            isPoint = true;
+                        }
+                        break;
+                    }
+                case 's': // Smooth Cubic (x2 y2 x y)+
+                case 'q': // Quadratic Bezier (x1 y1 x y)+
+                    {
+                        const args = getNums(4);
+                        if (args.length === 4) {
+                            consumed = 4;
+                            let x = args[2];
+                            let y = args[3];
+                            if (isRelative) {
+                                x += cursorX;
+                                y += cursorY;
+                            }
+                            targetX = x;
+                            targetY = y;
+                            isPoint = true;
+                        }
+                        break;
+                    }
+                case 'a': // Arc (rx ry rot large sweep x y)+
+                    {
+                        const args = getNums(7);
+                        if (args.length === 7) {
+                            consumed = 7;
+                            let x = args[5];
+                            let y = args[6];
+                            if (isRelative) {
+                                x += cursorX;
+                                y += cursorY;
+                            }
+                            targetX = x;
+                            targetY = y;
+                            isPoint = true;
+                        }
+                        break;
+                    }
+                case 'z': // ClosePath
+                    {
+                        cursorX = startX;
+                        cursorY = startY;
+                        // Add closing point to ensure loops are closed? 
+                        // For line charts, unnecessary usually.
+                        continue;
+                    }
+                default:
+                    continue;
+            }
+
+            if (consumed > 0) {
+                i += (consumed - 1);
+                cursorX = targetX;
+                cursorY = targetY;
+
+                if (isPoint) {
+                    const finalPt = transformPoint(cursorX, cursorY);
+                    points.push(finalPt);
+                }
+            } else {
+                break;
             }
         }
 
@@ -1165,27 +1508,22 @@ class SVGXLineChartRendering {
     _extractTraceStyle(pathElement) {
         const computed = window.getComputedStyle(pathElement);
 
-        // Get stroke - check attribute first, then style, then computed
         let stroke = pathElement.getAttribute('stroke');
         if (!stroke || stroke === 'none') stroke = pathElement.style.stroke;
         if (!stroke || stroke === 'none') stroke = computed.stroke;
 
-        // Get fill
         let fill = pathElement.getAttribute('fill');
         if (!fill) fill = pathElement.style.fill;
         if (!fill) fill = computed.fill;
 
-        // Get stroke-width
         let strokeWidth = pathElement.getAttribute('stroke-width');
         if (!strokeWidth) strokeWidth = pathElement.style.strokeWidth;
         if (!strokeWidth) strokeWidth = computed.strokeWidth;
 
-        // Get stroke-dasharray
         let strokeDasharray = pathElement.getAttribute('stroke-dasharray');
         if (!strokeDasharray) strokeDasharray = pathElement.style.strokeDasharray;
         if (!strokeDasharray) strokeDasharray = computed.strokeDasharray;
 
-        // Get stroke-opacity
         let strokeOpacity = pathElement.getAttribute('stroke-opacity');
         if (!strokeOpacity) strokeOpacity = pathElement.style.strokeOpacity;
         if (!strokeOpacity) strokeOpacity = computed.strokeOpacity;
@@ -1208,11 +1546,24 @@ class SVGXLineChartRendering {
 
     /**
      * Redraws the chart using D3.js to match the original as closely as possible.
-     * @param {Array} chartData - Array of series data from extractLogicalData()
+     * Use Trace-Based rendering to preserve disjoint paths and markers.
+     * @param {Object|Array} input - Object { series, axes } from extractLogicalData() OR array of series.
      * @param {string} containerSelector - CSS selector for the container element
      */
-    redrawChart(chartData, containerSelector) {
+    redrawChart(input, containerSelector) {
         console.log(`[LOG] Redrawing chart into ${containerSelector}...`);
+
+        let chartData = [];
+        let axesInfo = null;
+
+        // Handle both old format (array) and new format (object)
+        if (Array.isArray(input)) {
+            chartData = input;
+        } else if (input && input.series) {
+            chartData = input.series;
+            axesInfo = input.axes;
+        }
+
         const container = document.querySelector(containerSelector);
         if (!container) {
             console.warn(`[WARN] Container ${containerSelector} not found.`);
@@ -1252,110 +1603,160 @@ class SVGXLineChartRendering {
         const chartGroup = svg.append("g")
             .attr("transform", `translate(${margin.left},${margin.top})`);
 
-        // Collect all data points to determine scales
+        // Collect all data points (flattened) to determine fallback scales
         let allPoints = [];
-        chartData.forEach(series => allPoints = allPoints.concat(series.data));
+        chartData.forEach(series => {
+            if (series.data) allPoints = allPoints.concat(series.data);
+        });
 
         if (allPoints.length === 0) {
             console.warn("[WARN] No data points to plot.");
             return;
         }
 
-        const xExtent = d3.extent(allPoints, d => d.x);
-        const yExtent = d3.extent(allPoints, d => d.y);
+        // Determine Axis Domains
+        let xDomain, yDomain;
 
-        // Add some padding to the domain
-        const xPadding = (xExtent[1] - xExtent[0]) * 0.02;
-        const yPadding = (yExtent[1] - yExtent[0]) * 0.05;
+        if (axesInfo) {
+            // Use explicit domains extracted from xlm/ylm
+            xDomain = axesInfo.x.domain;
+            yDomain = axesInfo.y.domain;
+            console.log(`[LOG] Using explicit axes: X[${xDomain}], Y[${yDomain}]`);
+        } else {
+            // Fallback to data extent
+            const xExtent = d3.extent(allPoints, d => d.x);
+            const yExtent = d3.extent(allPoints, d => d.y);
+            // Add some padding to the domain
+            const xPadding = (xExtent[1] - xExtent[0]) * 0.02 || (xExtent[0] * 0.1);
+            const yPadding = (yExtent[1] - yExtent[0]) * 0.05 || (yExtent[0] * 0.1);
+            xDomain = [xExtent[0] - xPadding, xExtent[1] + xPadding];
+            yDomain = [yExtent[0] - yPadding, yExtent[1] + yPadding];
+        }
 
         const xScale = d3.scaleLinear()
-            .domain([xExtent[0] - xPadding, xExtent[1] + xPadding])
+            .domain(xDomain)
             .range([0, plotWidth]);
 
         const yScale = d3.scaleLinear()
-            .domain([0, 8])
+            .domain(yDomain)
             .range([plotHeight, 0]);
 
+        // Generate explicitly calculated ticks if interval is provided
+        // Get tick counts from extracted data
+        const xTickCount = (axesInfo && axesInfo.x.tickCount) ? axesInfo.x.tickCount : null;
+        const yTickCount = (axesInfo && axesInfo.y.tickCount) ? axesInfo.y.tickCount : null;
+
         // Draw grid lines
+        const yGridAxis = d3.axisLeft(yScale)
+            .tickSize(-plotWidth)
+            .tickFormat("");
+        if (yTickCount) yGridAxis.ticks(yTickCount);
+
         chartGroup.append("g")
             .attr("class", "grid")
             .attr("opacity", 0.3)
-            .call(d3.axisLeft(yScale)
-                .tickSize(-plotWidth)
-                .tickFormat("")
-            )
+            .call(yGridAxis)
             .selectAll("line")
             .attr("stroke", "#ccc");
+
+        const xGridAxis = d3.axisBottom(xScale)
+            .tickSize(-plotHeight)
+            .tickFormat("");
+        if (xTickCount) xGridAxis.ticks(xTickCount);
 
         chartGroup.append("g")
             .attr("class", "grid")
             .attr("transform", `translate(0,${plotHeight})`)
             .attr("opacity", 0.3)
-            .call(d3.axisBottom(xScale)
-                .tickSize(-plotHeight)
-                .tickFormat("")
-            )
+            .call(xGridAxis)
             .selectAll("line")
             .attr("stroke", "#ccc");
 
         // Draw X axis
+        const xAxisGen = d3.axisBottom(xScale);
+        if (xTickCount) xAxisGen.ticks(xTickCount);
+
         const xAxis = chartGroup.append("g")
             .attr("transform", `translate(0,${plotHeight})`)
-            .call(d3.axisBottom(xScale));
+            .call(xAxisGen);
         xAxis.selectAll("line").attr("stroke", "black");
         xAxis.selectAll("path").attr("stroke", "black");
         xAxis.selectAll("text").style("font-size", "12px").style("fill", "black");
 
         // Draw Y axis
+        const yAxisGen = d3.axisLeft(yScale);
+        if (yTickCount) yAxisGen.ticks(yTickCount);
+
         const yAxis = chartGroup.append("g")
-            .call(d3.axisLeft(yScale));
+            .call(yAxisGen);
         yAxis.selectAll("line").attr("stroke", "black");
         yAxis.selectAll("path").attr("stroke", "black");
         yAxis.selectAll("text").style("font-size", "12px").style("fill", "black");
 
-        // Line generator
+        // Draw X-Axis Label if present
+        if (axesInfo && axesInfo.x.label) {
+            console.log(`[LOG] Drawing X-Axis label: ${axesInfo.x.label}`);
+            svg.append("text")
+                .attr("transform", `translate(${margin.left + plotWidth / 2}, ${height - 20})`)
+                .style("text-anchor", "middle")
+                .style("font-size", "14px")
+                .text(axesInfo.x.label);
+        }
+
+        // Draw Y-Axis Label if present
+        if (axesInfo && axesInfo.y.label) {
+            console.log(`[LOG] Drawing Y-Axis label: ${axesInfo.y.label}`);
+            svg.append("text")
+                .attr("transform", "rotate(-90)")
+                .attr("y", margin.left / 3)
+                .attr("x", 0 - (margin.top + plotHeight / 2))
+                .attr("dy", "1em")
+                .style("text-anchor", "middle")
+                .style("font-size", "14px")
+                .text(axesInfo.y.label);
+        }
+
+        // Line generator with Smoothing (MonotoneX)
         const lineGenerator = d3.line()
             .x(d => xScale(d.x))
-            .y(d => yScale(d.y));
-
-        // Hardcoded colors for visibility (will extract colors later)
-        const colorPalette = [
-            '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
-            '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
-        ];
+            .y(d => yScale(d.y))
+            .curve(d3.curveMonotoneX); // Smooth curves to approximate potrace
 
         // Draw each series
         chartData.forEach((series, index) => {
-            if (series.data.length === 0) return;
+            if (!series.traces || series.traces.length === 0) return;
 
-            // Use hardcoded color from palette for now
-            const strokeColor = colorPalette[index % colorPalette.length];
-            const strokeWidth = 2;
+            console.log(`[LOG] Drawing series "${series.name}": ${series.traces.length} traces`);
 
-            console.log(`[LOG] Drawing series "${series.name}" with color ${strokeColor}, ${series.data.length} points`);
+            series.traces.forEach(trace => {
+                // Use the Series color (from Legend) as the primary source of truth
+                // trace.style might be black/null if the path attribute was missing or complex
+                const seriesColor = series.style.stroke !== 'none' ? series.style.stroke : '#000000';
 
-            // For line type or when we have multiple points
-            if (series.type === 'line' || series.data.length > 1) {
-                chartGroup.append("path")
-                    .datum(series.data)
-                    .attr("fill", "none")
-                    .attr("stroke", strokeColor)
-                    .attr("stroke-width", strokeWidth)
-                    .attr("d", lineGenerator);
-            }
-
-            // For marker type, also draw dots at data points
-            if (series.type === 'marker') {
-                chartGroup.selectAll(`.marker-${index}`)
-                    .data(series.data)
-                    .enter().append("circle")
-                    .attr("cx", d => xScale(d.x))
-                    .attr("cy", d => yScale(d.y))
-                    .attr("r", 4)
-                    .attr("fill", strokeColor)
-                    .attr("stroke", strokeColor)
-                    .attr("stroke-width", 1);
-            }
+                // If trace is a "Dot" (marker) OR has only 1 point: Draw Circle
+                if (trace.isDot || trace.points.length < 2) {
+                    const pt = trace.centroid || trace.points[0];
+                    if (pt) {
+                        chartGroup.append("circle")
+                            .attr("cx", xScale(pt.x))
+                            .attr("cy", yScale(pt.y))
+                            .attr("r", 4) // "Big Dot" size
+                            .attr("fill", seriesColor)
+                            .attr("stroke", "none");
+                    }
+                }
+                // Otherwise: Draw Line Path
+                else {
+                    chartGroup.append("path")
+                        .datum(trace.points)
+                        .attr("d", lineGenerator)
+                        .attr("fill", "none")
+                        .attr("stroke", seriesColor)
+                        .attr("stroke-width", series.style.strokeWidth || 2)
+                        .attr("stroke-dasharray", series.style.strokeDasharray || 'none')
+                        .attr("stroke-opacity", series.style.strokeOpacity || '1');
+                }
+            });
         });
 
         // Draw Legend - Horizontal at bottom
@@ -1363,11 +1764,13 @@ class SVGXLineChartRendering {
             .attr("transform", `translate(${margin.left}, ${height - margin.bottom + 45})`);
 
         let xOffset = 0;
+        // Hardcoded Palette just for legend logic if color missing? No, use extracted style.
+
         chartData.forEach((series, index) => {
             const legendItem = legend.append("g")
                 .attr("transform", `translate(${xOffset}, 0)`);
 
-            const legendColor = colorPalette[index % colorPalette.length];
+            const legendColor = series.style.stroke !== 'none' ? series.style.stroke : '#000';
 
             // Legend line or marker
             if (series.type === 'marker') {
