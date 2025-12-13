@@ -1071,7 +1071,8 @@ class SVGXLineChartRendering {
                 const logicalPoints = points.map(pt => {
                     return {
                         x: this._toLogicalX(pt.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]),
-                        y: this._toLogicalY(pt.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3])
+                        y: this._toLogicalY(pt.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]),
+                        isMarker: pt.isMarker // Preserve marker flag from extraction
                     };
                 });
 
@@ -1326,17 +1327,13 @@ class SVGXLineChartRendering {
     }
 
     /**
-     * Extracts points from a path element by parsing its 'd' attribute (Vertex Extraction).
-     * This ensures strict adherence to the defined data points (anchors) rather than sampling.
+     * Replaces the regex-based extraction with a Vertical Scanline Decomposition ("Tube Collapse").
+     * This separates the trace (centerline) from the markers (wide bulges) within a single Potrace path.
      * @param {SVGPathElement} pathElement 
-     * @returns {Array<{x: number, y: number}>}
+     * @returns {Array<{x: number, y: number, isMarker?: boolean}>}
      */
     _extractPointsFromPath(pathElement) {
-        const points = [];
-        const d = pathElement.getAttribute('d');
-        if (!d) return points;
-
-        // Get Screen CTM for coordinate normalization
+        // 1. Setup Transforms to get Screen/Global coordinates
         let ctm = null;
         let inverseRootCTM = null;
         try {
@@ -1347,187 +1344,113 @@ class SVGXLineChartRendering {
             }
         } catch (e) {
             console.warn("Could not get CTM in vertex extraction", e);
+            return []; // Fail gracefully
         }
 
-        // Helper to transform point: Path Local -> Screen -> Root SVG
-        const transformPoint = (x, y) => {
-            if (!ctm || !inverseRootCTM) return { x, y }; // Fallback to raw coords
-            const pt = this.svg.createSVGPoint();
-            pt.x = x;
-            pt.y = y;
-            const screenPt = pt.matrixTransform(ctm);
-            return screenPt.matrixTransform(inverseRootCTM);
+        const transformPoint = (p) => {
+            if (!ctm || !inverseRootCTM) return p;
+            let pt = this.svg.createSVGPoint();
+            pt.x = p.x;
+            pt.y = p.y;
+            return pt.matrixTransform(ctm).matrixTransform(inverseRootCTM);
         };
 
-        // --- SVG Path Parsing Logic ---
-        // Regex to tokenize: Command letters or numbers
-        const tokens = d.match(/([a-zA-Z])|([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)/g);
-        if (!tokens) return points;
+        // 2. Sample the Path (The Tube Scan)
+        const len = pathElement.getTotalLength();
+        if (len === 0) return [];
 
-        let cursorX = 0;
-        let cursorY = 0;
-        let startX = 0;
-        let startY = 0;
+        const buckets = new Map(); // X (int) -> {minY, maxY}
 
-        let currentCommand = 'M'; // Default first command is usually Moveto
+        // Sampling Step: 1.0 pixel provides good resolution without over-scanning
+        const step = 1.0;
 
-        for (let i = 0; i < tokens.length; i++) {
-            const token = tokens[i];
+        for (let i = 0; i < len; i += step) {
+            const rawPt = pathElement.getPointAtLength(i);
+            const pt = transformPoint(rawPt);
 
-            if (/^[a-zA-Z]$/.test(token)) {
-                currentCommand = token;
-                continue;
-            }
+            // Bucket by integer X to find vertical bounds (Top/Bottom of the tube)
+            const key = Math.round(pt.x);
 
-            const getNums = (count) => {
-                const nums = [];
-                for (let j = 0; j < count; j++) {
-                    if (i + j >= tokens.length) break;
-                    const val = parseFloat(tokens[i + j]);
-                    if (isNaN(val)) break;
-                    nums.push(val);
-                }
-                return nums;
-            };
-
-            let consumed = 0;
-            let targetX = cursorX;
-            let targetY = cursorY;
-            let isPoint = false;
-
-            const lowerCmd = currentCommand.toLowerCase();
-            const isRelative = (currentCommand === lowerCmd);
-
-            switch (lowerCmd) {
-                case 'm': // MoveTo (x y)+
-                case 'l': // LineTo (x y)+
-                case 't': // Smooth Quad (x y)+
-                    {
-                        const args = getNums(2);
-                        if (args.length === 2) {
-                            consumed = 2;
-                            let x = args[0];
-                            let y = args[1];
-                            if (isRelative) {
-                                x += cursorX;
-                                y += cursorY;
-                            }
-                            targetX = x;
-                            targetY = y;
-
-                            if (lowerCmd === 'm') {
-                                startX = targetX;
-                                startY = targetY;
-                                isPoint = true; // M is a point (start of subpath)
-                            } else {
-                                isPoint = true;
-                            }
-                        }
-                        break;
-                    }
-                case 'h': // Horizontal LineTo (x)+
-                    {
-                        const args = getNums(1);
-                        if (args.length === 1) {
-                            consumed = 1;
-                            let x = args[0];
-                            if (isRelative) x += cursorX;
-                            targetX = x;
-                            isPoint = true;
-                        }
-                        break;
-                    }
-                case 'v': // Vertical LineTo (y)+
-                    {
-                        const args = getNums(1);
-                        if (args.length === 1) {
-                            consumed = 1;
-                            let y = args[0];
-                            if (isRelative) y += cursorY;
-                            targetY = y;
-                            isPoint = true;
-                        }
-                        break;
-                    }
-                case 'c': // Cubic Bezier (x1 y1 x2 y2 x y)+
-                    {
-                        const args = getNums(6);
-                        if (args.length === 6) {
-                            consumed = 6;
-                            let x = args[4];
-                            let y = args[5];
-                            if (isRelative) {
-                                x += cursorX;
-                                y += cursorY;
-                            }
-                            targetX = x;
-                            targetY = y;
-                            isPoint = true;
-                        }
-                        break;
-                    }
-                case 's': // Smooth Cubic (x2 y2 x y)+
-                case 'q': // Quadratic Bezier (x1 y1 x y)+
-                    {
-                        const args = getNums(4);
-                        if (args.length === 4) {
-                            consumed = 4;
-                            let x = args[2];
-                            let y = args[3];
-                            if (isRelative) {
-                                x += cursorX;
-                                y += cursorY;
-                            }
-                            targetX = x;
-                            targetY = y;
-                            isPoint = true;
-                        }
-                        break;
-                    }
-                case 'a': // Arc (rx ry rot large sweep x y)+
-                    {
-                        const args = getNums(7);
-                        if (args.length === 7) {
-                            consumed = 7;
-                            let x = args[5];
-                            let y = args[6];
-                            if (isRelative) {
-                                x += cursorX;
-                                y += cursorY;
-                            }
-                            targetX = x;
-                            targetY = y;
-                            isPoint = true;
-                        }
-                        break;
-                    }
-                case 'z': // ClosePath
-                    {
-                        cursorX = startX;
-                        cursorY = startY;
-                        // Add closing point to ensure loops are closed? 
-                        // For line charts, unnecessary usually.
-                        continue;
-                    }
-                default:
-                    continue;
-            }
-
-            if (consumed > 0) {
-                i += (consumed - 1);
-                cursorX = targetX;
-                cursorY = targetY;
-
-                if (isPoint) {
-                    const finalPt = transformPoint(cursorX, cursorY);
-                    points.push(finalPt);
-                }
+            if (!buckets.has(key)) {
+                buckets.set(key, { min: pt.y, max: pt.y });
             } else {
-                break;
+                const b = buckets.get(key);
+                if (pt.y < b.min) b.min = pt.y;
+                if (pt.y > b.max) b.max = pt.y;
             }
         }
 
-        return points;
+        // 3. Process Buckets: Compute Centerline and Thickness
+        const samplePoints = [];
+        const widths = [];
+
+        // Sort keys to scan left-to-right
+        const sortedKeys = Array.from(buckets.keys()).sort((a, b) => a - b);
+
+        sortedKeys.forEach(x => {
+            const b = buckets.get(x);
+            const width = Math.abs(b.max - b.min);
+            const midY = (b.min + b.max) / 2;
+
+            // Only consider points with some thickness (avoids artifacts)
+            samplePoints.push({ x: x, y: midY, width: width });
+
+            // Collect widths to determine baseline stroke width
+            // Ignore very thin widths (start/end points) and very wide (markers) for now
+            if (width > 0.5) widths.push(width);
+        });
+
+        if (samplePoints.length === 0) return [];
+
+        // 4. Calculate Median Width (The "Trace Thickness")
+        widths.sort((a, b) => a - b);
+        const medianWidth = widths.length > 0 ? widths[Math.floor(widths.length / 2)] : 1.0;
+
+        // Threshold: If thickness > median * X, it's a marker bulge.
+        // Heuristic: Markers are usually significantly wider than the line trace.
+        const markerThreshold = Math.max(medianWidth * 1.6, 3.5);
+
+        // 5. Separate and Reconstruct
+        // Strategy: Collapse Trace to centerline points. Collapse Marker clusters to a single centroid point.
+        const finalPoints = [];
+        let inMarkerGroup = false;
+        let markerGroup = [];
+
+        for (let i = 0; i < samplePoints.length; i++) {
+            const p = samplePoints[i];
+
+            if (p.width > markerThreshold) {
+                // This X slice is part of a "bulge" (marker)
+                inMarkerGroup = true;
+                markerGroup.push(p);
+            } else {
+                // If we were collecting a marker group, finalize it now
+                if (inMarkerGroup) {
+                    // Calculate centroid of the marker group
+                    const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
+                    const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
+
+                    // Add the Marker Centroid as a specialized data point
+                    // This allows later logic to render it as a dot if desired
+                    finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+
+                    inMarkerGroup = false;
+                    markerGroup = [];
+                }
+
+                // Add the regular Trace point (Centerline)
+                finalPoints.push({ x: p.x, y: p.y, isMarker: false });
+            }
+        }
+
+        // Flush any trailing marker group at the end of the path
+        if (inMarkerGroup) {
+            const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
+            const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
+            finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+        }
+
+        return finalPoints;
     }
 
     /**
@@ -1807,6 +1730,21 @@ class SVGXLineChartRendering {
                         .attr("stroke-width", series.style.strokeWidth || 2)
                         .attr("stroke-dasharray", series.style.strokeDasharray || 'none')
                         .attr("stroke-opacity", series.style.strokeOpacity || '1');
+
+                    // OPTIONAL: Also draw markers embedded in the path that were identified by scanline
+                    const embeddedMarkers = trace.points.filter(p => p.isMarker);
+                    if (embeddedMarkers.length > 0) {
+                        chartGroup.selectAll(null)
+                            .data(embeddedMarkers)
+                            .enter()
+                            .append("circle")
+                            .attr("cx", d => xScale(d.x))
+                            .attr("cy", d => yScale(d.y))
+                            .attr("r", 4)
+                            .attr("fill", seriesColor)
+                            .attr("stroke", "white")
+                            .attr("stroke-width", 1);
+                    }
                 }
             });
         });
