@@ -330,6 +330,7 @@
       console.log(`[LOG] Chart type detected: ${lctype}`);
 
       if (lctype === 'line') {
+        const eventCtrlKey = event.ctrlKey;
         // ===== LINE CHART RENDERING =====
         const rendering = new SVGXLineChartRendering(svg, clrFileContent);
         // Step 1: Add Logical Mapping (xlm, ylm)
@@ -349,6 +350,12 @@
         if (newContainer) {
           newContainer.scrollIntoView({ behavior: 'smooth' });
         }
+
+        if (eventCtrlKey) {
+          // If Ctrl key is pressed, download the SVG immediately
+          downloadTableSvg();
+        }
+        
         return;
       }
 

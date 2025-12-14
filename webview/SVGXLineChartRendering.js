@@ -1818,6 +1818,12 @@ class SVGXLineChartRendering {
             .domain(yDomain)
             .range([plotHeight, 0]);
 
+        // Set logical mapping attributes on the new SVG
+        const xlm = [xDomain[0], xDomain[1], margin.left, margin.left + plotWidth];
+        const ylm = [yDomain[0], yDomain[1], margin.top + plotHeight, margin.top];
+        svg.attr("xlm", `[${xlm.join(", ")}]`);
+        svg.attr("ylm", `[${ylm.join(", ")}]`);
+
         // Generate explicitly calculated ticks if interval is provided
         // Get tick counts from extracted data
         const xTickCount = (axesInfo && axesInfo.x.tickCount) ? axesInfo.x.tickCount : null;
@@ -1930,6 +1936,7 @@ class SVGXLineChartRendering {
                     const pt = trace.centroid || trace.points[0];
                     if (pt) {
                         chartGroup.append("circle")
+                            .attr("lc_legend_ref", series.id)
                             .attr("cx", xScale(pt.x))
                             .attr("cy", yScale(pt.y))
                             .attr("r", 4) // "Big Dot" size
@@ -1941,6 +1948,7 @@ class SVGXLineChartRendering {
                 else {
                     chartGroup.append("path")
                         .datum(trace.points)
+                        .attr("lc_legend_ref", series.id)
                         .attr("d", lineGenerator)
                         .attr("fill", "none")
                         .attr("stroke", seriesColor)
@@ -1955,6 +1963,7 @@ class SVGXLineChartRendering {
                             .data(embeddedMarkers)
                             .enter()
                             .append("circle")
+                            .attr("lc_legend_ref", series.id)
                             .attr("cx", d => xScale(d.x))
                             .attr("cy", d => yScale(d.y))
                             .attr("r", 4)
@@ -2000,6 +2009,7 @@ class SVGXLineChartRendering {
             const textElement = legendItem.append("text")
                 .attr("x", 25)
                 .attr("y", 4)
+                .attr("lc_legend_id", series.id)
                 .text(series.name)
                 .style("font-size", "12px")
                 .style("fill", "#333");
@@ -2011,5 +2021,76 @@ class SVGXLineChartRendering {
         });
 
         console.log(`[LOG] Chart redrawn with ${chartData.length} series.`);
+
+        // Enable interactivity on the new chart
+        this._enableNewChartInteractivity(containerSelector);
+    }
+
+    _enableNewChartInteractivity(containerSelector) {
+        const container = document.querySelector(containerSelector);
+        if (!container) return;
+        const svg = container.querySelector('svg');
+        if (!svg) return;
+
+        console.log("[LOG] Enabling interactivity for the new chart...");
+
+        const legendLabels = svg.querySelectorAll('text[lc_legend_id]');
+
+        legendLabels.forEach(label => {
+            label.style.cursor = 'pointer';
+            label.addEventListener('click', () => {
+                const legendId = label.getAttribute('lc_legend_id');
+                if (!legendId) return;
+
+                console.log(`[LOG] New chart legend clicked: ${legendId}`);
+                
+                const dataElements = svg.querySelectorAll(`[lc_legend_ref="${legendId}"]`);
+                if (dataElements.length === 0) return;
+
+                console.log(`[LOG] Flashing ${dataElements.length} elements for legend ${legendId}`);
+
+                dataElements.forEach(el => {
+                    const originalStroke = el.getAttribute('stroke') || 'none';
+                    const originalStrokeWidth = el.getAttribute('stroke-width') || '1';
+                    const originalFill = el.getAttribute('fill') || 'none';
+                    const originalRadius = el.getAttribute('r') || '4';
+
+                    const isPath = el.tagName.toLowerCase() === 'path';
+
+                    // Bring to front
+                    if (el.parentNode) {
+                        el.parentNode.appendChild(el);
+                    }
+
+                    // Apply flash effect
+                    el.style.transition = 'all 0.1s ease-in-out';
+                    
+                    if (isPath) {
+                        el.style.stroke = 'red';
+                        el.style.strokeWidth = `${parseFloat(originalStrokeWidth) + 3}px`;
+                    } else { // It's a circle
+                        el.style.fill = 'red';
+                        el.setAttribute('r', `${parseFloat(originalRadius) * 1.5}`);
+                    }
+
+                    // Revert after a delay
+                    setTimeout(() => {
+                        el.style.transition = 'all 0.4s ease-out';
+                        if (isPath) {
+                            el.style.stroke = originalStroke;
+                            el.style.strokeWidth = originalStrokeWidth;
+                        } else {
+                            el.style.fill = originalFill;
+                            el.setAttribute('r', originalRadius);
+                        }
+                    }, 150);
+                    
+                    // Clean up transition property after it's done
+                    setTimeout(() => {
+                        el.style.transition = '';
+                    }, 550);
+                });
+            });
+        });
     }
 }
