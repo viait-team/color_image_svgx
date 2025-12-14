@@ -106,3 +106,42 @@ We go through all un asscoaited paths again, we match line with legend color.
 ## Extract the style for each trace.
 
 ## Redraw the SVG Chart using d3.js. The goal is to best match the original SVG chart.
+
+# Structureal Refactoring
+
+Pure structural refactoring SVGXLineChartRefactoring.js
+
+Add three new classes, and keep the `1SVGXLineChartRendering` as a class controlling the existing workflow.
+The three new classes are, `SVGXLineChartAnalyzer`, `SVGXLineChartDataExtractor`, and `SVGXLineChartNewRendering`.
+
+Move the existing methods and properties from the current monolithic SVGXLineChartRendering class into the appropriate new class.
+Crucially, when moving these blocks of code, I will preserve them exactly as they are—including every line of code, every comment, all formatting, style, and even whitespace. I will not rewrite or alter the internal logic of the existing methods.
+The leaner SVGXLineChartRendering class will act as a facade, orchestrating the calls to the other three new classes to ensure the external behavior remains absolutely identical. Any "glue" code required to connect the new classes will be written to meticulously match the existing coding style.
+
+Here is the proposal:
+
+1. SVGXLineChartAnalyzer: This class would be the "reverse-engineering" engine. It would be responsible for all the logic that inspects the raw SVG to understand its structure.
+
+- Inputs: Raw SVG element.
+- Responsibilities:
+  - Finding axes, gridlines, ticks, and labels (addLogicalMapping).
+  - Identifying the legend and its items (addLegendInfo).
+  - Detecting and classifying potential data paths and markers.
+- Output: A structured object describing the chart's layout, axis mappings (xlm/ylm), and legend details (including the markerType for each series).
+
+2. SVGXLineChartDataExtractor: This class would act as the bridge between the visual representation and the logical data.
+
+- Inputs: The analysis result from the Analyzer and the raw SVG element.
+- Responsibilities:
+  - Iterating through paths associated with each data series.
+  - Using the scanline algorithm (\_extractPointsFromPath) to convert SVG paths into an array of coordinates.
+  - Using the axis mappings (xlm/ylm) to transform those visual coordinates into logical data points.
+- Output: A clean, structured dataset (e.g., an array of series objects, each with its data points, style, and marker type).
+
+3. SVGXLineChartNewRendering: This would be a new, much leaner class that replaces the current one. Its sole responsibility would be to draw a chart.
+
+Inputs: The structured data from the SVGXLineChartDataExtractor.
+
+- Responsibilities:
+  - Using D3.js to render axes, lines, and markers.
+  - Output: A new, clean SVG chart rendered into a specified container.
