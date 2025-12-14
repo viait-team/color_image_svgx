@@ -1220,11 +1220,14 @@ class SVGXLineChartRendering {
             }
         };
 
+        const titleAndFooter = this._findChartTitleAndFooter();
+
+
         // Requested Console Logs
         console.log("X info:", JSON.stringify(axes.x));
         console.log("Y info:", JSON.stringify(axes.y));
 
-        return { series: extractedSeries, axes: axes };
+        return { series: extractedSeries, axes: axes, title: titleAndFooter.title, footer: titleAndFooter.footer };
     }
 
     _intersectsLegend(bbox) {
@@ -1295,6 +1298,115 @@ class SVGXLineChartRendering {
         });
 
         return candidate;
+    }
+
+    /**
+     * Finds the chart title and footer, handling multiple lines.
+     * @returns {{title: {text: string, x: number, y: number, width: number, height: number}[], footer: {text: string, x: number, y: number, width: number, height: number}[]}}
+     */
+    _findChartTitleAndFooter() {
+        const texts = Array.from(this.svg.querySelectorAll('text'));
+        const vb = this.svg.viewBox.baseVal;
+        const svgHeight = vb.height || 864;
+        const svgWidth = vb.width || 1536;
+
+        const titleCandidates = [];
+        const footerCandidates = [];
+
+        // 1. Filter out numeric labels, legend items, and axis labels
+        const numericLabels = this._findNumericLabels();
+        const legendItemTexts = this.legendItems ? this.legendItems.map(item => item.text) : [];
+        const allTexts = texts.map(t => {
+            const bbox = this._getFullBBox(t);
+            return {
+                element: t,
+                text: t.textContent.trim(),
+                bbox: bbox,
+            };
+        }).filter(t => {
+            if (!t.text || !t.bbox) return false;
+            // Filter out purely numeric text (like axis ticks)
+            if (/^[\d.,\-%$]+$/.test(t.text)) return false;
+            // Filter out legend items
+            if (legendItemTexts.includes(t.text)) return false;
+            // Filter out previously identified axis ticks by checking against the numericLabels list
+            if (numericLabels.some(nl => nl.text === t.text)) return false;
+
+            return true;
+        });
+
+
+        // 2. Identify Title and Footer candidates by position
+        const titleYThreshold = svgHeight * 0.20; // Top 20% - Increased
+        const footerYThreshold = svgHeight * 0.85; // Bottom 15%
+
+        allTexts.forEach(t => {
+            if (t.bbox.y < titleYThreshold) {
+                titleCandidates.push(t);
+            } else if (t.bbox.y > footerYThreshold) {
+                footerCandidates.push(t);
+            }
+        });
+
+        // 3. Group and Sort Candidates
+        const groupLines = (candidates) => {
+            if (candidates.length === 0) return [];
+            
+            // Sort by vertical position first, then horizontal
+            candidates.sort((a, b) => {
+                if (Math.abs(a.bbox.y - b.bbox.y) > 5) {
+                    return a.bbox.y - b.bbox.y;
+                }
+                return a.bbox.x - b.bbox.x;
+            });
+
+            const grouped = [];
+            if (candidates.length === 0) {
+                return [];
+            }
+            
+            let currentLine = [candidates[0]];
+
+            for (let i = 1; i < candidates.length; i++) {
+                const prevInLine = currentLine[0];
+                const curr = candidates[i];
+                const avgHeight = (prevInLine.bbox.height + curr.bbox.height) / 2;
+
+                // If the vertical distance is less than ~75% of the average height, consider it the same line.
+                // This handles slight vertical drift within a line of text.
+                if (Math.abs(curr.bbox.y - prevInLine.bbox.y) < avgHeight * 0.75) {
+                    currentLine.push(curr);
+                } else {
+                    // New line found, push the completed line
+                    grouped.push(currentLine);
+                    currentLine = [curr]; // Start a new line
+                }
+            }
+            // Push the very last line
+            if (currentLine.length > 0) {
+                grouped.push(currentLine);
+            }
+
+            // Join text fragments on the same line and return final structured lines
+            return grouped.map(line => {
+                // sort fragments by x before joining
+                line.sort((a, b) => a.bbox.x - b.bbox.x);
+                const text = line.map(l => l.text).join(' ');
+                const x = Math.min(...line.map(l => l.bbox.x));
+                const y = line[0].bbox.y;
+                const width = Math.max(...line.map(l => l.bbox.x + l.bbox.width)) - x;
+                const height = Math.max(...line.map(l => l.bbox.height));
+                return { text, x, y, width, height };
+            });
+        };
+
+        const titleLines = groupLines(titleCandidates);
+        const footerLines = groupLines(footerCandidates);
+
+        console.log(`[LOG] Found ${titleLines.length} title lines.`);
+        console.log(`[LOG] Found ${footerLines.length} footer lines.`);
+
+        return { title: titleLines, footer: footerLines };
     }
 
     _computeCentroid(points) {
@@ -1593,6 +1705,8 @@ class SVGXLineChartRendering {
 
         let chartData = [];
         let axesInfo = null;
+        let title = [];
+        let footer = [];
 
         // Handle both old format (array) and new format (object)
         if (Array.isArray(input)) {
@@ -1600,6 +1714,8 @@ class SVGXLineChartRendering {
         } else if (input && input.series) {
             chartData = input.series;
             axesInfo = input.axes;
+            title = input.title || [];
+            footer = input.footer || [];
         }
 
         const container = document.querySelector(containerSelector);
@@ -1625,7 +1741,15 @@ class SVGXLineChartRendering {
         const aspectRatio = originalHeight / originalWidth;
         const height = width * aspectRatio;
 
-        const margin = { top: 40, right: 150, bottom: 60, left: 80 };
+        const titleHeight = title.length * 20;
+        const footerHeight = footer.length * 20;
+
+        const margin = {
+            top: 40 + titleHeight,
+            right: 150,
+            bottom: 75 + footerHeight, // Increased bottom margin for footer and legend
+            left: 80
+        };
         const plotWidth = width - margin.left - margin.right;
         const plotHeight = height - margin.top - margin.bottom;
 
@@ -1636,6 +1760,21 @@ class SVGXLineChartRendering {
             .attr("viewBox", `0 0 ${width} ${height}`)
             .style("background", "#ffffff")
             .style("font-family", "sans-serif");
+
+        // Draw Title
+        if (title.length > 0) {
+            const titleGroup = svg.append("g")
+                .attr("transform", `translate(${width / 2}, 30)`);
+            title.forEach((line, i) => {
+                titleGroup.append("text")
+                    .attr("y", i * 20)
+                    .style("text-anchor", "middle")
+                    .style("font-size", "16px")
+                    .style("font-weight", "bold")
+                    .text(line.text);
+            });
+        }
+
 
         // Create chart group with margins
         const chartGroup = svg.append("g")
@@ -1735,7 +1874,7 @@ class SVGXLineChartRendering {
         if (axesInfo && axesInfo.x.label) {
             console.log(`[LOG] Drawing X-Axis label: ${axesInfo.x.label}`);
             svg.append("text")
-                .attr("transform", `translate(${margin.left + plotWidth / 2}, ${height - 20})`)
+                .attr("transform", `translate(${margin.left + plotWidth / 2}, ${height - margin.bottom + 30})`)
                 .style("text-anchor", "middle")
                 .style("font-size", "14px")
                 .text(axesInfo.x.label);
@@ -1753,6 +1892,21 @@ class SVGXLineChartRendering {
                 .style("font-size", "14px")
                 .text(axesInfo.y.label);
         }
+
+        // Draw Footer
+        if (footer.length > 0) {
+            const footerGroup = svg.append("g")
+                .attr("transform", `translate(${margin.left}, ${height - margin.bottom + 75})`);
+            footer.forEach((line, i) => {
+                footerGroup.append("text")
+                    .attr("y", i * 18)
+                    .style("text-anchor", "start")
+                    .style("font-size", "11px")
+                    .style("fill", "#555")
+                    .text(line.text);
+            });
+        }
+
 
         // Line generator with Smoothing (MonotoneX)
         const lineGenerator = d3.line()
@@ -1814,7 +1968,7 @@ class SVGXLineChartRendering {
 
         // Draw Legend - Horizontal at bottom
         const legend = svg.append("g")
-            .attr("transform", `translate(${margin.left}, ${height - margin.bottom + 45})`);
+            .attr("transform", `translate(${margin.left}, ${height - margin.bottom + 50})`);
 
         let xOffset = 0;
         // Hardcoded Palette just for legend logic if color missing? No, use extracted style.
