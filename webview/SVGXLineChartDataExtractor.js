@@ -1,4 +1,3 @@
-
 /**
  * 2. SVGXLineChartDataExtractor
  * Responsible for transforming visual SVG data into logical data points.
@@ -78,6 +77,9 @@ class SVGXLineChartDataExtractor {
                 const points = this._extractPointsFromPath(path);
                 if (points.length === 0) return;
 
+                // Capture source color for re-association
+                const pathColor = this._extractTraceStyle(path).stroke;
+
                 // 1. Map points to Logical Coordinates
                 // toLogicalX: dx_min + (vx - vx_min) * (dx_max - dx_min) / (vx_max - vx_min)
                 // toLogicalY: dy_min + (vy - vy_min) * (dy_max - dy_min) / (vy_max - vy_min)
@@ -85,7 +87,10 @@ class SVGXLineChartDataExtractor {
                     return {
                         x: this._toLogicalX(pt.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]),
                         y: this._toLogicalY(pt.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]),
-                        isMarker: pt.isMarker // Preserve marker flag from extraction
+                        isMarker: pt.isMarker,
+                        // Pass markerType ('general') and srcColor to allow re-association in Rendering
+                        markerType: pt.markerType,
+                        srcColor: pathColor 
                     };
                 });
 
@@ -249,6 +254,8 @@ class SVGXLineChartDataExtractor {
         // For now, assume false or check against a known legend box if we had one.
         return false;
     }
+
+
 
     /**
      * Heuristically finds the axis title.
@@ -607,7 +614,7 @@ class SVGXLineChartDataExtractor {
                         // Force Split: Save current group, start new one
                         const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
                         const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
-                        finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+                        finalPoints.push({ x: avgX, y: avgY, isMarker: true, markerType: 'general' });
 
                         markerGroup = [p];
                     } else {
@@ -620,7 +627,7 @@ class SVGXLineChartDataExtractor {
                     if (markerGroup.length > 0) {
                         const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
                         const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
-                        finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+                        finalPoints.push({ x: avgX, y: avgY, isMarker: true, markerType: 'general' });
                     }
                     inMarkerGroup = false;
                     markerGroup = [];
@@ -633,7 +640,7 @@ class SVGXLineChartDataExtractor {
         if (inMarkerGroup && markerGroup.length > 0) {
             const avgX = markerGroup.reduce((s, m) => s + m.x, 0) / markerGroup.length;
             const avgY = markerGroup.reduce((s, m) => s + m.y, 0) / markerGroup.length;
-            finalPoints.push({ x: avgX, y: avgY, isMarker: true });
+            finalPoints.push({ x: avgX, y: avgY, isMarker: true, markerType: 'general' });
         }
 
         return finalPoints;

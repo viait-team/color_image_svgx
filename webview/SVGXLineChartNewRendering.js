@@ -1,5 +1,3 @@
-
-
 /**
  * 3. SVGXLineChartNewRendering
  * Responsible for using D3.js to render axes, lines, markers, and visual elements.
@@ -284,7 +282,8 @@ class SVGXLineChartNewRendering {
                             .attr("r", 4)
                             .attr("fill", seriesColor)
                             .attr("stroke", "white")
-                            .attr("stroke-width", 1);
+                            .attr("stroke-width", 1)
+                            .attr("lc_marker_type", "general"); // Tag for re-association
                     }
                 }
             });
@@ -337,8 +336,71 @@ class SVGXLineChartNewRendering {
 
         console.log(`[LOG] Chart redrawn with ${chartData.length} series.`);
 
+        // --- NEW: Perform Re-association of embedded markers ---
+        this._associationCorrection(svg, chartData);
+
         // Enable interactivity on the new chart
         this._enableNewChartInteractivity(containerSelector);
+    }
+
+    _associationCorrection(svg, chartData) {
+        console.log("[LOG] Performing association correction for embedded markers...");
+        
+        // 1. Filter chartData to find legend definitions that are Markers
+        const markerLegends = chartData.filter(s => s.type === 'marker');
+        if (markerLegends.length === 0) return;
+
+        // 2. Select all embedded markers tagged as 'general'
+        const embeddedMarkers = svg.selectAll('circle[lc_marker_type="general"]');
+
+        if (embeddedMarkers.empty()) return;
+
+        const self = this;
+
+        embeddedMarkers.each(function() {
+            const circle = d3.select(this);
+            const circleColor = circle.attr("fill");
+
+            let bestMatch = null;
+            let minDist = Infinity;
+
+            // 3. Compare color with Marker Legends
+            markerLegends.forEach(leg => {
+                // leg.style.stroke usually holds the legend color in the extracted data
+                const legColor = leg.style.stroke;
+                const dist = self._getColorDistance(
+                    self._normalizeColor(circleColor), 
+                    self._normalizeColor(legColor)
+                );
+
+                if (dist < 60 && dist < minDist) {
+                    minDist = dist;
+                    bestMatch = leg;
+                }
+            });
+
+            // 4. Update Reference if match found
+            if (bestMatch) {
+                circle.attr("lc_legend_ref", bestMatch.id);
+                // Optional: Update visual style to match legend if needed (e.g. if legend had different fill)
+            }
+        });
+    }
+
+    _getColorDistance(c1, c2) {
+        if (!c1 || !c2 || !c1.startsWith('#') || !c2.startsWith('#')) return Infinity;
+        const r1 = parseInt(c1.substr(1, 2), 16), g1 = parseInt(c1.substr(3, 2), 16), b1 = parseInt(c1.substr(5, 2), 16);
+        const r2 = parseInt(c2.substr(1, 2), 16), g2 = parseInt(c2.substr(3, 2), 16), b2 = parseInt(c2.substr(5, 2), 16);
+        return Math.sqrt(Math.pow(r1 - r2, 2) + Math.pow(g1 - g2, 2) + Math.pow(b1 - b2, 2));
+    }
+
+    _normalizeColor(color) {
+        if (!color) return '';
+        color = color.trim().toLowerCase();
+        if (color.startsWith('#')) return color.length === 4 ? `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}` : color;
+        const rgb = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+        if (rgb) return `#${(+rgb[1]).toString(16).padStart(2,'0')}${(+rgb[2]).toString(16).padStart(2,'0')}${(+rgb[3]).toString(16).padStart(2,'0')}`;
+        return color;
     }
 
     _enableNewChartInteractivity(containerSelector) {
