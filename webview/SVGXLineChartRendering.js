@@ -313,12 +313,23 @@ class SVGXLineChartRendering {
                 });
             }
         }
-        matched.sort((a, b) => a.distance - b.distance);
-        const result = [];
-        for (let i = 0; i < matched.length && i < 2; i++) {
-            result.push(matched[i]);
+
+        if (matched.length < 2) return matched;
+
+        // Find two matches with the largest separation in visual position
+        let maxSep = -Infinity;
+        let pair = [];
+        for (let i = 0; i < matched.length; i++) {
+            for (let j = i + 1; j < matched.length; j++) {
+                const sep = Math.abs(matched[i].visual - matched[j].visual);
+                if (sep > maxSep) {
+                    maxSep = sep;
+                    pair = [matched[i], matched[j]];
+                }
+            }
         }
-        return result;
+
+        return pair;
     }
 
     _highlightMatches(pairs, color) {
@@ -1351,7 +1362,7 @@ class SVGXLineChartRendering {
         // 3. Group and Sort Candidates
         const groupLines = (candidates) => {
             if (candidates.length === 0) return [];
-            
+
             // Sort by vertical position first, then horizontal
             candidates.sort((a, b) => {
                 if (Math.abs(a.bbox.y - b.bbox.y) > 5) {
@@ -1364,7 +1375,7 @@ class SVGXLineChartRendering {
             if (candidates.length === 0) {
                 return [];
             }
-            
+
             let currentLine = [candidates[0]];
 
             for (let i = 1; i < candidates.length; i++) {
@@ -2043,7 +2054,7 @@ class SVGXLineChartRendering {
                 if (!legendId) return;
 
                 console.log(`[LOG] New chart legend clicked: ${legendId}`);
-                
+
                 const dataElements = svg.querySelectorAll(`[lc_legend_ref="${legendId}"]`);
                 if (dataElements.length === 0) return;
 
@@ -2064,7 +2075,7 @@ class SVGXLineChartRendering {
 
                     // Apply flash effect
                     el.style.transition = 'all 0.1s ease-in-out';
-                    
+
                     if (isPath) {
                         el.style.stroke = 'red';
                         el.style.strokeWidth = `${parseFloat(originalStrokeWidth) + 3}px`;
@@ -2084,7 +2095,7 @@ class SVGXLineChartRendering {
                             el.setAttribute('r', originalRadius);
                         }
                     }, 150);
-                    
+
                     // Clean up transition property after it's done
                     setTimeout(() => {
                         el.style.transition = '';
