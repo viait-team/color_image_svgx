@@ -97,6 +97,16 @@ class SVGXLineChartAnalyzer {
             }
 
             if (xPairs.length < 2) {
+                console.log("[LOG] X-axis matching with gridlines failed or insufficient. Trying fallback to ticks...");
+                // Fallback: Try ticks
+                const xTicks = this._findXAxisBottomTicks(svgWidth, svgHeight);
+                console.log(`[LOG] Found ${xTicks.length} X ticks (fallback)`);
+                if (xTicks.length >= 2) {
+                    xPairs = this._matchXAxisBottomLabels(xTicks, bottomLabels);
+                }
+            }
+
+            if (xPairs.length < 2) {
                 console.warn("[WARN] Could not find 2 valid X-axis pairs.");
             } else {
                 xPairs.sort((a, b) => a.logical - b.logical);
@@ -371,24 +381,50 @@ class SVGXLineChartAnalyzer {
     _getFullBBox(element) {
         try {
             const bbox = element.getBBox();
-            const svgRect = this.svg.getBoundingClientRect();
-            const svgViewBox = this.svg.viewBox.baseVal;
-            const scaleX = svgViewBox.width / svgRect.width;
-            const scaleY = svgViewBox.height / svgRect.height;
-            const elemRect = element.getBoundingClientRect();
-            const x = (elemRect.left - svgRect.left) * scaleX;
-            const y = (elemRect.top - svgRect.top) * scaleY;
-            const width = elemRect.width * scaleX;
-            const height = elemRect.height * scaleY;
+
+            // Get the Screen CTM of the element
+            const ctm = element.getScreenCTM();
+            // Get the Screen CTM of the root SVG
+            const rootCTM = this.svg.getScreenCTM();
+
+            // Transform element's CTM to be relative to the Root SVG's local coordinate system
+            // This effectively removes the window/browser scaling/positioning
+            const transformMatrix = rootCTM.inverse().multiply(ctm);
+
+            // Create points for the corners of the bbox
+            const pt = this.svg.createSVGPoint();
+            const corners = [
+                { x: bbox.x, y: bbox.y },
+                { x: bbox.x + bbox.width, y: bbox.y },
+                { x: bbox.x + bbox.width, y: bbox.y + bbox.height },
+                { x: bbox.x, y: bbox.y + bbox.height }
+            ];
+
+            // Transform corners
+            const transformedCorners = corners.map(c => {
+                pt.x = c.x;
+                pt.y = c.y;
+                return pt.matrixTransform(transformMatrix);
+            });
+
+            // Calculate new axis-aligned bounding box in Root SVG Space
+            const xCoords = transformedCorners.map(c => c.x);
+            const yCoords = transformedCorners.map(c => c.y);
+            const minX = Math.min(...xCoords);
+            const maxX = Math.max(...xCoords);
+            const minY = Math.min(...yCoords);
+            const maxY = Math.max(...yCoords);
+
             return {
-                x: x,
-                y: y,
-                width: width,
-                height: height,
-                cx: x + width / 2,
-                cy: y + height / 2
+                x: minX,
+                y: minY,
+                width: maxX - minX,
+                height: maxY - minY,
+                cx: minX + (maxX - minX) / 2,
+                cy: minY + (maxY - minY) / 2
             };
         } catch (e) {
+            console.warn("Failed to get stable bbox:", e);
             return null;
         }
     }
@@ -568,7 +604,21 @@ class SVGXLineChartAnalyzer {
                 // Marker: small size (< 30px?), aspect ratio 0.5 < r < 2.0
                 if (bestCandidate.width < 30 && bestCandidate.height < 30 && ratio > 0.5 && ratio < 2.0) {
 
-                    bestCandidate = candidates[0];
+                    let darkestCandidate = null;
+                    let minLuminance = Infinity;
+
+                    // Iterate through candidates to find the one with the darkest color.
+                    // A lower luminance value means the color is darker.
+                    for (const candidate of closeCandidates) {
+                        const candidateColor = this._extractPathColor(candidate.element);
+                        const luminance = this._getColorLuminance(candidateColor);
+
+                        if (luminance < minLuminance) {
+                            minLuminance = luminance;
+                            darkestCandidate = candidate;
+                        }
+                    }
+                    bestCandidate = darkestCandidate || bestCandidate;
                     bestSymbol = bestCandidate.element;
 
                     legendType = 'marker';
@@ -647,8 +697,11 @@ class SVGXLineChartAnalyzer {
             const p = paths[i];
             const box = this._getFullBBox(p);
             if (!box) continue;
+
+            // 1. General Margins (Backup)
             if (box.x + box.width < LEFT_MARGIN || box.x > RIGHT_MARGIN) continue;
             if (box.y + box.height < TOP_MARGIN || box.y > BOTTOM_MARGIN) continue;
+
             if (p.hasAttribute('lc_legend_instance')) continue;
             if (box.width > svgWidth * 0.9 && box.height > svgHeight * 0.9) continue;
 
@@ -956,6 +1009,31 @@ class SVGXLineChartAnalyzer {
         }
         return color;
     }
+
+    /**
+     * Calculates the perceived luminance of a color.
+     * @param {string} color - The color in any valid CSS format (hex, rgb, name).
+     * @returns {number} A luminance value from 0 (black) to 255 (white).
+     * @private
+     */
+    _getColorLuminance(color) {
+        const normalizedColor = this._normalizeColor(color);
+        // Default to white (max luminance) for invalid or transparent colors
+        if (!normalizedColor || normalizedColor === 'none' || !normalizedColor.startsWith('#') || normalizedColor.length !== 7) {
+            return 255;
+        }
+
+        const r = parseInt(normalizedColor.substring(1, 3), 16);
+        const g = parseInt(normalizedColor.substring(3, 5), 16);
+        const b = parseInt(normalizedColor.substring(5, 7), 16);
+
+        // Standard luminance formula (perceived brightness)
+        // It weights green highest, then red, then blue, mimicking human vision.
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b);
+
+        return luminance;
+    }
+
 
     enableLegendInteractivity() {
         console.log("[LOG] SVGXLineChartRendering: Enabling legend interactivity...");

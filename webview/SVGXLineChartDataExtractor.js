@@ -90,7 +90,7 @@ class SVGXLineChartDataExtractor {
                         isMarker: pt.isMarker,
                         // Pass markerType ('general') and srcColor to allow re-association in Rendering
                         markerType: pt.markerType,
-                        srcColor: pathColor 
+                        srcColor: pathColor
                     };
                 });
 
@@ -499,8 +499,10 @@ class SVGXLineChartDataExtractor {
 
         const buckets = new Map();
 
-        // Keep Step = 4.0 as requested
-        const step = 4.0;
+        // Keep Step = 4.0 as requested, but ensure minimal density for short paths
+        const step = Math.max(0.5, Math.min(4.0, len / 100));
+
+        let debugCount = 0; // Debug limit
 
         for (let i = 0; i < len; i += step) {
             const rawPt = pathElement.getPointAtLength(i);
@@ -511,6 +513,12 @@ class SVGXLineChartDataExtractor {
             let transformedPt = pt;
             if (ctm && inverseRootCTM) {
                 transformedPt = pt.matrixTransform(ctm).matrixTransform(inverseRootCTM);
+
+                // DATA DROP DEBUGGING
+                if (debugCount < 3) {
+                    console.log(`[DEBUG] Point ${debugCount}: Raw(${rawPt.x.toFixed(1)}, ${rawPt.y.toFixed(1)}) -> Transformed(${transformedPt.x.toFixed(1)}, ${transformedPt.y.toFixed(1)})`);
+                    debugCount++;
+                }
             }
 
             const key = Math.round(transformedPt.x);
