@@ -9,6 +9,7 @@ class SVGXLineChartAnalyzer {
         // Parse the .clr file content into a Set for efficient lookups
         this.officialPalette = clrContent ? new Set(clrContent.trim().split(/\r?\n/).map(c => this._normalizeColor(c))) : null;
         this.legendItems = []; // Store legend items here
+        this.chartArea = null; // Store chart area here
     }
 
     // ==============================================================================
@@ -69,6 +70,12 @@ class SVGXLineChartAnalyzer {
                 const chartTop = Math.min(...allYVisuals);
                 const chartBottom = Math.max(...allYVisuals);
                 console.log(`[LOG] Chart area: left=${chartLeft.toFixed(1)}, top=${chartTop.toFixed(1)}, right=${chartRight.toFixed(1)}, bottom=${chartBottom.toFixed(1)}`);
+
+                // Store the calculated chart area for later use
+                this.chartArea = {
+                    visualX: [chartLeft, chartRight],
+                    visualY: [chartTop, chartBottom]
+                };
             }
 
             // 5. Y-axis Final Result
@@ -121,6 +128,14 @@ class SVGXLineChartAnalyzer {
         } catch (error) {
             console.error("[ERROR] Failed to add logical mapping:", error);
         }
+    }
+
+    /**
+     * Public getter for the calculated chart area.
+     * @returns {object|null} The chart area object or null if not calculated.
+     */
+    getChartArea() {
+        return this.chartArea;
     }
 
     // ==============================================================================

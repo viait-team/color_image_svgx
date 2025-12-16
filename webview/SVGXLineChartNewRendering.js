@@ -20,6 +20,7 @@ class SVGXLineChartNewRendering {
         let axesInfo = null;
         let title = [];
         let footer = [];
+        let chartTexts = [];
 
         // Handle both old format (array) and new format (object)
         if (Array.isArray(input)) {
@@ -29,6 +30,7 @@ class SVGXLineChartNewRendering {
             axesInfo = input.axes;
             title = input.title || [];
             footer = input.footer || [];
+            chartTexts = input.chartTexts || [];
         }
 
         const container = document.querySelector(containerSelector);
@@ -288,6 +290,25 @@ class SVGXLineChartNewRendering {
                 }
             });
         });
+
+        // Draw Texts inside Chart Area
+        if (chartTexts.length > 0) {
+            console.log(`[LOG] Drawing ${chartTexts.length} general text elements.`);
+            const textGroup = chartGroup.append("g").attr("class", "chart-texts");
+
+            textGroup.selectAll("text")
+                .data(chartTexts)
+                .enter()
+                .append("text")
+                .attr("x", d => xScale(d.lx))
+                .attr("y", d => yScale(d.ly))
+                .text(d => d.text)
+                .attr("fill", d => d.style.fill || "#000")
+                .style("font-size", d => d.style.fontSize || "12px")
+                .style("font-family", d => d.style.fontFamily || "sans-serif")
+                .style("font-weight", d => d.style.fontWeight || "normal")
+                .style("text-anchor", "start");
+        }
 
         // Draw Legend - Horizontal at bottom
         const legend = svg.append("g")

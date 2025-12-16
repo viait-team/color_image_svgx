@@ -3,9 +3,10 @@
  * Responsible for transforming visual SVG data into logical data points.
  */
 class SVGXLineChartDataExtractor {
-    constructor(svgElement, legendItems) {
+    constructor(svgElement, legendItems, chartArea) {
         this.svg = svgElement;
         this.legendItems = legendItems;
+        this.chartArea = chartArea; // Store the pre-calculated chart area
     }
 
     /**
@@ -239,13 +240,21 @@ class SVGXLineChartDataExtractor {
         };
 
         const titleAndFooter = this._findChartTitleAndFooter();
+        
+        // --- CRITICAL FIX ---
+        // Use the accurate chartArea passed from the Analyzer, not the one calculated internally by findAxisDomains().
+        // The internal one (domains.visualX/Y) can be slightly off, causing text to be missed.
+        const visualXForText = this.chartArea && this.chartArea.visualX ? this.chartArea.visualX : domains.visualX;
+        const visualYForText = this.chartArea && this.chartArea.visualY ? this.chartArea.visualY : domains.visualY;
+        const chartTexts = this._findChartAreaTexts(visualXForText, visualYForText, xMapping, yMapping);
+        // --- END FIX ---
 
 
         // Requested Console Logs
         console.log("X info:", JSON.stringify(axes.x));
         console.log("Y info:", JSON.stringify(axes.y));
 
-        return { series: extractedSeries, axes: axes, title: titleAndFooter.title, footer: titleAndFooter.footer };
+        return { series: extractedSeries, axes: axes, title: titleAndFooter.title, footer: titleAndFooter.footer, chartTexts: chartTexts };
     }
 
     _intersectsLegend(bbox) {
@@ -316,6 +325,64 @@ class SVGXLineChartDataExtractor {
         });
 
         return candidate;
+    }
+
+    /**
+     * Finds text elements located within the main chart plot area.
+     * @param {Array} xRange - [min, max] visual X of chart plot area.
+     * @param {Array} yRange - [min, max] visual Y of chart plot area.
+     * @returns {Array<{text: string, x: number, y: number, style: object}>}
+     * @private
+     */
+    _findChartAreaTexts(xRange, yRange, xMapping, yMapping) {
+        if (!xRange || !yRange) {
+            console.warn("[WARN] Cannot find chart area texts without a valid visual range.");
+            return [];
+        }
+    
+        const allTexts = Array.from(this.svg.querySelectorAll('text'));
+        const chartTexts = [];
+    
+        // --- Build an exclusion list of all known non-chart text elements ---
+        const exclusionSet = new Set();
+        // 1. Exclude legend text elements
+        const legendItemTexts = this.legendItems ? this.legendItems.map(item => item.text) : [];
+        legendItemTexts.forEach(text => exclusionSet.add(text));
+        
+        const [minX, maxX] = xRange;
+        const [minY, maxY] = yRange;
+    
+        allTexts.forEach(t => {
+            const text = t.textContent.trim();
+            if (!text || exclusionSet.has(text)) {
+                return; // Skip empty or explicitly excluded text
+            }
+    
+            const bbox = this._getFullBBox(t);
+            if (!bbox) return;
+    
+            // Check if the center of the text is inside the plot area
+            if (bbox.cx >= minX && bbox.cx <= maxX && bbox.cy >= minY && bbox.cy <= maxY) {
+                const lx = this._toLogicalX(bbox.x, ...xMapping);
+                const ly = this._toLogicalY(bbox.y, ...yMapping);
+                const style = window.getComputedStyle(t);
+                chartTexts.push({
+                    text: text,
+                    x: bbox.x,
+                    y: bbox.y,
+                    lx: lx,
+                    ly: ly,
+                    style: {
+                        fill: style.fill,
+                        fontSize: style.fontSize,
+                        fontFamily: style.fontFamily,
+                        fontWeight: style.fontWeight,
+                    }
+                });
+            }
+        });
+        console.log(`[LOG] Found ${chartTexts.length} text elements inside the chart area.`);
+        return chartTexts;
     }
 
     /**

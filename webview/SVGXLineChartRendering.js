@@ -31,7 +31,14 @@ class SVGXLineChartRendering {
     }
 
     extractLogicalData() {
-        const extractor = new SVGXLineChartDataExtractor(this.svg, this.analyzer.legendItems);
+        // Get the accurate chart area from the analyzer
+        const chartArea = this.analyzer.getChartArea ? this.analyzer.getChartArea() : null;
+
+        const extractor = new SVGXLineChartDataExtractor(
+            this.svg, 
+            this.analyzer.legendItems,
+            chartArea // Pass the chart area to the extractor
+        );
         
         // Dependency Injection: Helper methods required by Extractor that live in Analyzer
         extractor._getFullBBox = this.analyzer._getFullBBox.bind(this.analyzer);
