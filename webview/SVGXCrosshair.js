@@ -9,9 +9,9 @@ class SVGXCrosshair {
         this.chartArea = chartArea;
         this.settings = {
             enabled: true,
-            lineColor: '#e5e5e5',
-            labelBg: '#252526',
-            labelColor: '#cccccc',
+            lineColor: '#808080',
+            labelBg: '#ffff00',
+            labelColor: '#000000',
             numberPrecision: 2
         };
 
