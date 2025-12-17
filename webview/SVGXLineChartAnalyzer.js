@@ -1,4 +1,3 @@
-
 /**
  * 1. SVGXLineChartAnalyzer
  * Responsible for reverse-engineering the SVG: finding axes, gridlines, labels, legends, and interactivity.
@@ -171,9 +170,9 @@ class SVGXLineChartAnalyzer {
     _findYAxisLeftTicks(svgWidth, svgHeight) {
         const paths = Array.from(this.svg.querySelectorAll('path'));
         const ticks = [];
-        const MAX_TICK_WIDTH = svgWidth * 0.05;
+        const MAX_TICK_WIDTH = svgWidth * 0.01;
         const MIN_TICK_WIDTH = 3;
-        const MAX_TICK_HEIGHT = 20;
+        const MAX_TICK_HEIGHT = 10;
         const LEFT_EDGE_LIMIT = svgWidth * 0.20;
 
         paths.forEach(p => {
@@ -191,10 +190,10 @@ class SVGXLineChartAnalyzer {
                     linePos: box.cy,
                     width: box.width
                 });
-                // p.setAttribute('fill', 'blue');
-                // p.setAttribute('stroke', 'blue');
-                // p.setAttribute('stroke-width', '2');
-                // p.parentNode.appendChild(p);
+                p.setAttribute('fill', 'blue');
+                p.setAttribute('stroke', 'blue');
+                p.setAttribute('stroke-width', '2');
+                p.parentNode.appendChild(p);
             }
         });
         return ticks;
@@ -274,65 +273,90 @@ class SVGXLineChartAnalyzer {
 
     _matchXAxisBottomLabels(gridLines, labels) {
         if (gridLines.length < 2 || labels.length < 2) return [];
+
+        // --- NEW ALIGNMENT FILTER: Filter out labels that are vertically misaligned ---
+        // Calculate Median Y of all labels
+        const ys = labels.map(l => l.y);
+        ys.sort((a, b) => a - b);
+        const medianY = ys[Math.floor(ys.length / 2)];
+
+        // Filter out outliers (e.g. Y-axis labels caught in the bottom scan)
+        const validLabels = labels.filter(l => Math.abs(l.y - medianY) < 30);
+
         const matched = [];
-        for (let i = 0; i < gridLines.length; i++) {
-            const line = gridLines[i];
-            let bestLabel = null;
+
+        for (let j = 0; j < validLabels.length; j++) {
+            const label = validLabels[j];
+            let bestLine = null;
             let bestDistance = Infinity;
-            for (let j = 0; j < labels.length; j++) {
-                const label = labels[j];
+
+            for (let i = 0; i < gridLines.length; i++) {
+                const line = gridLines[i];
                 const dx = label.x - line.x;
                 const dy = label.y - line.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
+
                 if (distance < bestDistance) {
                     bestDistance = distance;
-                    bestLabel = label;
+                    bestLine = line;
                 }
             }
-            if (bestDistance <= 100 && bestLabel !== null) {
+
+            if (bestDistance <= 100 && bestLine !== null) {
                 matched.push({
-                    logical: bestLabel.value,
-                    visual: line.linePos,
+                    logical: label.value,
+                    visual: bestLine.linePos,
                     distance: bestDistance,
-                    labelText: bestLabel.text,
-                    labelElement: bestLabel.element,
-                    gridLineElement: line.element
+                    labelText: label.text,
+                    labelElement: label.element,
+                    gridLineElement: bestLine.element
                 });
             }
         }
+
         matched.sort((a, b) => a.distance - b.distance);
-        const result = [];
-        for (let i = 0; i < matched.length && i < 2; i++) {
-            result.push(matched[i]);
-        }
-        return result;
+        return matched;
     }
 
     _matchYAxisLeftLabels(gridLines, labels) {
         if (gridLines.length < 2 || labels.length < 2) return [];
+
+        // --- NEW ALIGNMENT FILTER: Filter out labels that are horizontally misaligned ---
+        // Calculate Median X of all labels
+        const xs = labels.map(l => l.x);
+        xs.sort((a, b) => a - b);
+        const medianX = xs[Math.floor(xs.length / 2)];
+
+        // Filter out outliers (e.g. X-axis labels caught in the left scan)
+        const validLabels = labels.filter(l => Math.abs(l.x - medianX) < 30);
+
         const matched = [];
-        for (let i = 0; i < gridLines.length; i++) {
-            const line = gridLines[i];
-            let bestLabel = null;
+
+        for (let j = 0; j < validLabels.length; j++) {
+            const label = validLabels[j];
+            let bestLine = null;
             let bestDistance = Infinity;
-            for (let j = 0; j < labels.length; j++) {
-                const label = labels[j];
+
+            for (let i = 0; i < gridLines.length; i++) {
+                const line = gridLines[i];
                 const dx = label.x - line.x;
                 const dy = label.y - line.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
+
                 if (distance < bestDistance) {
                     bestDistance = distance;
-                    bestLabel = label;
+                    bestLine = line;
                 }
             }
-            if (bestDistance <= 100 && bestLabel !== null) {
+
+            if (bestDistance <= 100 && bestLine !== null) {
                 matched.push({
-                    logical: bestLabel.value,
-                    visual: line.linePos,
+                    logical: label.value,
+                    visual: bestLine.linePos,
                     distance: bestDistance,
-                    labelText: bestLabel.text,
-                    labelElement: bestLabel.element,
-                    gridLineElement: line.element
+                    labelText: label.text,
+                    labelElement: label.element,
+                    gridLineElement: bestLine.element
                 });
             }
         }
