@@ -53,6 +53,10 @@ class SVGXLineChartDataExtractor {
 
         const extractedSeries = [];
 
+        // Check globally if any series contains markers
+        const hasMarkerLegends = this.legendItems.some(item => item.lc_legend_type === 'marker');
+        console.log(`[LOG] Global marker legend check: ${hasMarkerLegends}`);
+
         this.legendItems.forEach(legendItem => {
             const seriesId = legendItem.id;
             const seriesName = legendItem.text;
@@ -75,7 +79,7 @@ class SVGXLineChartDataExtractor {
             const allLogicalPoints = [];
 
             associatedPaths.forEach(path => {
-                const points = this._extractPointsFromPath(path);
+                const points = this._extractPointsFromPath(path, hasMarkerLegends);
                 if (points.length === 0) return;
 
                 // Capture source color for re-association
@@ -145,68 +149,61 @@ class SVGXLineChartDataExtractor {
             const svgWidth = svgBox.width || 800;
             const svgHeight = svgBox.height || 600;
 
-            // 1. Get X-Axis Ticks (Bottom Labels)
-            // We can reuse the filter logic from _findXAxisBottomLabels but we need the VISUAL min/max
-            const xLabels = this._findXAxisBottomLabels(svgHeight);
-
             let xDom = null;
-            if (xLabels && xLabels.length >= 2) {
-                // Sort by X position
-                xLabels.sort((a, b) => a.x - b.x);
-                const firstTick = xLabels[0];
-                const lastTick = xLabels[xLabels.length - 1];
+            let yDom = null;
+            let visualX = null;
+            let visualY = null;
 
-                // Map visual X -> Logical X
-                const l1 = this._toLogicalX(firstTick.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
-                const l2 = this._toLogicalX(lastTick.x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
-                xDom = [Math.min(l1, l2), Math.max(l1, l2)];
-                console.log(`[LOG] Found X-Axis Ticks: First=[x:${firstTick.x.toFixed(1)}, val:${firstTick.value}], Last=[x:${lastTick.x.toFixed(1)}, val:${lastTick.value}] -> Dom: ${xDom}`);
-            } else {
-                // Fallback: Gridlines
-                console.log("[LOG] No X-Ticks found, checking gridlines...");
-                const xGrid = this._findXAxisGridlines(svgWidth, svgHeight, 0.4); // 40% height min
-                if (xGrid && xGrid.length >= 2) {
-                    const minX = Math.min(...xGrid.map(g => g.x));
-                    const maxX = Math.max(...xGrid.map(g => g.x));
-                    const l1 = this._toLogicalX(minX, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
-                    const l2 = this._toLogicalX(maxX, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+            // 1. Prioritize Chart Area (Plot Box) for full range
+            if (this.chartArea && this.chartArea.visualX && this.chartArea.visualY) {
+                visualX = [Math.min(...this.chartArea.visualX), Math.max(...this.chartArea.visualX)];
+                visualY = [Math.min(...this.chartArea.visualY), Math.max(...this.chartArea.visualY)];
+
+                // Map visual limits -> Logical limits
+                const lx1 = this._toLogicalX(visualX[0], xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+                const lx2 = this._toLogicalX(visualX[1], xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+                xDom = [Math.min(lx1, lx2), Math.max(lx1, lx2)];
+
+                const ly1 = this._toLogicalY(visualY[0], yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
+                const ly2 = this._toLogicalY(visualY[1], yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
+                yDom = [Math.min(ly1, ly2), Math.max(ly1, ly2)];
+
+                console.log(`[LOG] Domains derived from ChartArea Gridlines: X=[${xDom}], Y=[${yDom}]`);
+            }
+
+            // 2. Ticks/Labels detection (still useful for tick counts and as fallback)
+            const xLabels = this._findXAxisBottomLabels(svgHeight);
+            const yLabels = this._findYAxisLeftLabels(svgWidth);
+
+            // Fallback for X
+            if (!xDom) {
+                if (xLabels && xLabels.length >= 2) {
+                    xLabels.sort((a, b) => a.x - b.x);
+                    const l1 = this._toLogicalX(xLabels[0].x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
+                    const l2 = this._toLogicalX(xLabels[xLabels.length - 1].x, xMapping[0], xMapping[1], xMapping[2], xMapping[3]);
                     xDom = [Math.min(l1, l2), Math.max(l1, l2)];
+                    visualX = [xLabels[0].x, xLabels[xLabels.length - 1].x];
+                } else {
+                    xDom = [Math.min(xMapping[0], xMapping[1]), Math.max(xMapping[0], xMapping[1])];
+                    visualX = [Math.min(xMapping[2], xMapping[3]), Math.max(xMapping[2], xMapping[3])];
                 }
             }
 
-            // 2. Get Y-Axis Ticks (Left Labels)
-            const yLabels = this._findYAxisLeftLabels(svgWidth);
-
-            let yDom = null;
-            if (yLabels && yLabels.length >= 2) {
-                yLabels.sort((a, b) => a.y - b.y); // Top to Bottom
-                const firstTick = yLabels[0]; // Topmost (lowest visual Y, highest Logical usually)
-                const lastTick = yLabels[yLabels.length - 1]; // Bottommost
-
-                const l1 = this._toLogicalY(firstTick.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
-                const l2 = this._toLogicalY(lastTick.y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
-                yDom = [Math.min(l1, l2), Math.max(l1, l2)];
-                console.log(`[LOG] Found Y-Axis Ticks: Top=[y:${firstTick.y.toFixed(1)}, val:${firstTick.value}], Bottom=[y:${lastTick.y.toFixed(1)}, val:${lastTick.value}] -> Dom: ${yDom}`);
-            } else {
-                // Fallback: Use Mapping anchors themselves if no ticks found?
-                // Let's just use the tick locations from the MAPPING as the range.
-                const l1 = yMapping[0];
-                const l2 = yMapping[1];
-                yDom = [Math.min(l1, l2), Math.max(l1, l2)];
+            // Fallback for Y
+            if (!yDom) {
+                if (yLabels && yLabels.length >= 2) {
+                    yLabels.sort((a, b) => a.y - b.y);
+                    const l1 = this._toLogicalY(yLabels[0].y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
+                    const l2 = this._toLogicalY(yLabels[yLabels.length - 1].y, yMapping[0], yMapping[1], yMapping[2], yMapping[3]);
+                    yDom = [Math.min(l1, l2), Math.max(l1, l2)];
+                    visualY = [yLabels[0].y, yLabels[yLabels.length - 1].y];
+                } else {
+                    yDom = [Math.min(yMapping[0], yMapping[1]), Math.max(yMapping[0], yMapping[1])];
+                    visualY = [Math.min(yMapping[2], yMapping[3]), Math.max(yMapping[2], yMapping[3])];
+                }
             }
 
-            // Final Safety Check
-            if (!xDom) {
-                // Fallback to the mapping's own ticks range
-                xDom = [Math.min(xMapping[0], xMapping[1]), Math.max(xMapping[0], xMapping[1])];
-            }
-
-
-
-
-
-            // Calculate Tick Counts
-            const xCount = xLabels ? xLabels.length : (xGrid ? xGrid.length : 0);
+            const xCount = xLabels ? xLabels.length : 0;
             const yCount = yLabels ? yLabels.length : 0;
 
             return {
@@ -214,13 +211,8 @@ class SVGXLineChartDataExtractor {
                 y: yDom,
                 xTickCount: xCount,
                 yTickCount: yCount,
-                // Return Visual Bounds for Label Detection
-                visualX: xLabels && xLabels.length >= 2
-                    ? [Math.min(xLabels[0].x, xLabels[xLabels.length - 1].x), Math.max(xLabels[0].x, xLabels[xLabels.length - 1].x)]
-                    : (xGrid && xGrid.length >= 2 ? [Math.min(...xGrid.map(g => g.x)), Math.max(...xGrid.map(g => g.x))] : null),
-                visualY: yLabels && yLabels.length >= 2
-                    ? [Math.min(yLabels[0].y, yLabels[yLabels.length - 1].y), Math.max(yLabels[0].y, yLabels[yLabels.length - 1].y)]
-                    : null
+                visualX: visualX,
+                visualY: visualY
             };
         };
 
@@ -240,7 +232,7 @@ class SVGXLineChartDataExtractor {
         };
 
         const titleAndFooter = this._findChartTitleAndFooter();
-        
+
         // --- CRITICAL FIX ---
         // Use the accurate chartArea passed from the Analyzer, not the one calculated internally by findAxisDomains().
         // The internal one (domains.visualX/Y) can be slightly off, causing text to be missed.
@@ -339,28 +331,28 @@ class SVGXLineChartDataExtractor {
             console.warn("[WARN] Cannot find chart area texts without a valid visual range.");
             return [];
         }
-    
+
         const allTexts = Array.from(this.svg.querySelectorAll('text'));
         const chartTexts = [];
-    
+
         // --- Build an exclusion list of all known non-chart text elements ---
         const exclusionSet = new Set();
         // 1. Exclude legend text elements
         const legendItemTexts = this.legendItems ? this.legendItems.map(item => item.text) : [];
         legendItemTexts.forEach(text => exclusionSet.add(text));
-        
+
         const [minX, maxX] = xRange;
         const [minY, maxY] = yRange;
-    
+
         allTexts.forEach(t => {
             const text = t.textContent.trim();
             if (!text || exclusionSet.has(text)) {
                 return; // Skip empty or explicitly excluded text
             }
-    
+
             const bbox = this._getFullBBox(t);
             if (!bbox) return;
-    
+
             // Check if the center of the text is inside the plot area
             if (bbox.cx >= minX && bbox.cx <= maxX && bbox.cy >= minY && bbox.cy <= maxY) {
                 const lx = this._toLogicalX(bbox.x, ...xMapping);
@@ -526,9 +518,11 @@ class SVGXLineChartDataExtractor {
     /**
      * OPTIMIZED Vertical Scanline Decomposition.
      * Fixes performance by reusing objects and increasing scan step.
-     * Fixes "missing markers" by tuning the threshold sensitivity.
+     * Includes a Fast Path for series without markers.
+     * @param {SVGPathElement} pathElement
+     * @param {boolean} hasMarkerLegends - If true, skip Fast Path and use heavy algorithm.
      */
-    _extractPointsFromPath(pathElement) {
+    _extractPointsFromPath(pathElement, hasMarkerLegends = false) {
         // 1. Setup Transforms
         let ctm = null;
         let inverseRootCTM = null;
@@ -591,11 +585,13 @@ class SVGXLineChartDataExtractor {
             const key = Math.round(transformedPt.x);
 
             if (!buckets.has(key)) {
-                buckets.set(key, { min: transformedPt.y, max: transformedPt.y });
+                buckets.set(key, { min: transformedPt.y, max: transformedPt.y, sumX: transformedPt.x, count: 1 });
             } else {
                 const b = buckets.get(key);
                 if (transformedPt.y < b.min) b.min = transformedPt.y;
                 if (transformedPt.y > b.max) b.max = transformedPt.y;
+                b.sumX += transformedPt.x;
+                b.count++;
             }
         }
 
@@ -607,12 +603,23 @@ class SVGXLineChartDataExtractor {
             const b = buckets.get(x);
             const vHeight = Math.abs(b.max - b.min);
             const midY = (b.min + b.max) / 2;
+            const avgX = b.sumX / b.count;
+
             if (vHeight > 0.1) {
-                rawPoints.push({ x: x, y: midY, vHeight: vHeight });
+                rawPoints.push({ x: avgX, y: midY, vHeight: vHeight });
+            } else if (vHeight === 0) {
+                // Perfect horizontal segment/single point in bucket
+                rawPoints.push({ x: avgX, y: midY, vHeight: 0 });
             }
         });
 
         if (rawPoints.length === 0) return [];
+
+        // --- FAST PATH: If the chart has NO marker legend items, we skip thickness and separation ---
+        if (!hasMarkerLegends) {
+            // No markers in the chart, return all bucket midpoints as simple line points
+            return rawPoints.map(p => ({ x: p.x, y: p.y, isMarker: false }));
+        }
 
         // 4. Perpendicular Thickness Calculation
         // Modified to use Trend Slope + Cosine Correction

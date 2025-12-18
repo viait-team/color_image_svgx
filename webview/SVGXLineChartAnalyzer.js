@@ -84,7 +84,7 @@ class SVGXLineChartAnalyzer {
                 yPairs.sort((a, b) => a.logical - b.logical);
                 const y1 = yPairs[0];
                 const y2 = yPairs[yPairs.length - 1];
-                const ylm_string = `[${y1.logical.toFixed(2)}, ${y2.logical.toFixed(2)}, ${y1.visual.toFixed(2)}, ${y2.visual.toFixed(2)}]`;
+                const ylm_string = `[${y1.logical}, ${y2.logical}, ${y1.visual}, ${y2.visual}]`;
                 this.svg.setAttribute("ylm", ylm_string);
                 console.log(`[LOG] Final result: ylm=${ylm_string}`);
             }
@@ -118,7 +118,7 @@ class SVGXLineChartAnalyzer {
                 xPairs.sort((a, b) => a.logical - b.logical);
                 const x1 = xPairs[0];
                 const x2 = xPairs[xPairs.length - 1];
-                const xlm_string = `[${x1.logical.toFixed(2)}, ${x2.logical.toFixed(2)}, ${x1.visual.toFixed(2)}, ${x2.visual.toFixed(2)}]`;
+                const xlm_string = `[${x1.logical}, ${x2.logical}, ${x1.visual}, ${x2.visual}]`;
                 this.svg.setAttribute("xlm", xlm_string);
                 // this._highlightMatches(xPairs, 'orange');
                 console.log(`[LOG] Final result: xlm=${xlm_string}`);
@@ -190,10 +190,10 @@ class SVGXLineChartAnalyzer {
                     linePos: box.cy,
                     width: box.width
                 });
-                p.setAttribute('fill', 'blue');
-                p.setAttribute('stroke', 'blue');
-                p.setAttribute('stroke-width', '2');
-                p.parentNode.appendChild(p);
+                // p.setAttribute('fill', 'blue');
+                // p.setAttribute('stroke', 'blue');
+                // p.setAttribute('stroke-width', '2');
+                // p.parentNode.appendChild(p);
             }
         });
         return ticks;
@@ -627,12 +627,26 @@ class SVGXLineChartAnalyzer {
             let legendType = 'line'; // Default to line
 
             if (candidates.length > 0) {
-                // BUG 2 FIX Part B: Sort candidates by area to pick the inner symbol
-                candidates.sort((a, b) => a.dist - b.dist);
-                const minDist = candidates[0].dist;
-                const closeCandidates = candidates.filter(c => c.dist <= minDist + 5);
-                closeCandidates.sort((a, b) => a.area - b.area);
-                let bestCandidate = closeCandidates[0];
+
+                let bestCandidate = candidates[0];
+                bestSymbol = bestCandidate.element;
+
+                // Find the darkest candidate
+                let darkestCandidate = null;
+                let minLuminance = Infinity;
+
+                // Iterate through candidates to find the one with the darkest color.
+                // A lower luminance value means the color is darker.
+                for (const candidate of candidates) {
+                    const candidateColor = this._extractPathColor(candidate.element);
+                    const luminance = this._getColorLuminance(candidateColor);
+
+                    if (luminance < minLuminance) {
+                        minLuminance = luminance;
+                        darkestCandidate = candidate;
+                    }
+                }
+                bestCandidate = darkestCandidate || bestCandidate;
                 bestSymbol = bestCandidate.element;
 
                 // Determine type based on aspect ratio and size
@@ -642,24 +656,6 @@ class SVGXLineChartAnalyzer {
                 // Let's use the logic from the plan:
                 // Marker: small size (< 30px?), aspect ratio 0.5 < r < 2.0
                 if (bestCandidate.width < 30 && bestCandidate.height < 30 && ratio > 0.5 && ratio < 2.0) {
-
-                    let darkestCandidate = null;
-                    let minLuminance = Infinity;
-
-                    // Iterate through candidates to find the one with the darkest color.
-                    // A lower luminance value means the color is darker.
-                    for (const candidate of closeCandidates) {
-                        const candidateColor = this._extractPathColor(candidate.element);
-                        const luminance = this._getColorLuminance(candidateColor);
-
-                        if (luminance < minLuminance) {
-                            minLuminance = luminance;
-                            darkestCandidate = candidate;
-                        }
-                    }
-                    bestCandidate = darkestCandidate || bestCandidate;
-                    bestSymbol = bestCandidate.element;
-
                     legendType = 'marker';
                 }
             }
