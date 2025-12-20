@@ -396,6 +396,94 @@ class SVGXLineChartAnalyzer {
         });
     }
 
+    _extractTickLabelNumber(text) {
+        if (text == null) return null;
+
+        const raw = text.trim();
+        if (!raw) return null;
+
+        // ------------------------------------------------------------
+        // 1. strip
+        // ------------------------------------------------------------
+        const stripText = raw.replace(/[$€£¥,%]/g, '');
+
+        // ------------------------------------------------------------
+        // 2. validate raw structure (Option C)
+        // ------------------------------------------------------------
+        const pattern = new RegExp(
+            '^' +
+            '(?:[$€£¥]|[A-Z]{3})?\\s*' +
+            '[+-]?' +
+            '(?:' +
+            '(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?' +
+            '|' +
+            '\\.\\d+' +
+            ')' +
+            '(?:[eE][+-]?\\d+)?' +
+            '\\s*' +
+            '(?:' +
+            '\\(([a-zA-Zµ·*/^0-9%\\s-]+)\\)' +
+            '|' +
+            '(?<![eE])[a-df-zA-DF-Zµ%][a-zA-Z0-9µ·*/^%-]*' +
+            ')?' +
+            '([kKmMbBtT])?' +
+            '\\s*$'
+        );
+
+        if (!pattern.test(raw)) return null;
+
+        // ------------------------------------------------------------
+        // 3. unit removal (Option C)
+        // ------------------------------------------------------------
+        let noUnit = stripText.replace(
+            /\(([a-zA-Zµ·*/^0-9%\s-]+)\)$|(?<![eE])[a-df-zA-DF-Zµ%][a-zA-Z0-9µ·*/^%-]*$/g,
+            ''
+        ).trim();
+
+        // ------------------------------------------------------------
+        // 4. suffix factor (minimal fix)
+        // ------------------------------------------------------------
+        let factor = 1;
+
+        const suffixMatch = raw.match(/([kKmMbBtT])\s*$/);
+        if (suffixMatch) {
+            const suffixChar = suffixMatch[1];
+            const idx = raw.lastIndexOf(suffixChar);
+            const prev = idx > 0 ? raw[idx - 1] : null;
+
+            // ✅ Only apply suffix if previous char is NOT a letter
+            if (!prev || !/[a-zA-Z]/.test(prev)) {
+                const suffix = suffixChar.toLowerCase();
+                if (suffix === 'k') factor = 1_000;
+                if (suffix === 'm') factor = 1_000_000;
+                if (suffix === 'b') factor = 1_000_000_000;
+                if (suffix === 't') factor = 1_000_000_000_000;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // 5. thousand separator
+        // ------------------------------------------------------------
+        const noThousands = noUnit.replace(/,/g, '');
+
+        // ------------------------------------------------------------
+        // 6. extract digits (scientific notation)
+        // ------------------------------------------------------------
+        const numberMatch = noThousands.match(
+            /[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?/
+        );
+        if (!numberMatch) return null;
+
+        const baseValue = Number(numberMatch[0]);
+        if (Number.isNaN(baseValue)) return null;
+
+        // ------------------------------------------------------------
+        // 7. apply factor
+        // ------------------------------------------------------------
+        return baseValue * factor;
+    }
+
+
     _findNumericLabels() {
         const texts = Array.from(this.svg.querySelectorAll('text'));
         const labels = [];
@@ -403,8 +491,8 @@ class SVGXLineChartAnalyzer {
             const box = this._getFullBBox(t);
             if (!box) return;
             const text = t.textContent.trim();
-            const val = parseFloat(text.replace(/[$,%]/g, ''));
-            if (!isNaN(val)) {
+            const val = this._extractTickLabelNumber(text);
+            if (val !== null && !Number.isNaN(val)) {
                 labels.push({
                     element: t,
                     text,
@@ -687,6 +775,19 @@ class SVGXLineChartAnalyzer {
 
             items.push(legendItem);
         }
+
+        // Check if all legends are markers
+        const allAreMarker = items.every(
+            item => item.lc_legend_type === 'marker'
+        );
+
+        if (allAreMarker) {
+            for (let i = 0; i < items.length; i++) {
+                items[i].lc_legend_type = 'line';
+            }
+            console.log(`[LOG] All marker legends converted to line legends.`);
+        }
+
         return items;
     }
 
